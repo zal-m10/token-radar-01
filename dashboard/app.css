@@ -1,16 +1,17 @@
-/* Token Radar's plain theme. The five palette values, two radii and two families are the whole style;
+/* Token Radar's plain theme. The palette values, two radii and three families are the whole style;
    everything else is spacing, a hairline and a type step. */
 :root {
-  --canvas: #f2f5f3;
+  --canvas: #faf9f6;
   --surface: #ffffff;
-  --ink: #16211c;
-  --muted: #5f6f67;
-  --border: #d8e2dc;
-  --accent: #0f7a5a;
-  --negative: #b23b2e;
+  --ink: #1a1a18;
+  --muted: #6b675f;
+  --border: #e3ddd2;
+  --accent: #0b5e44;
+  --negative: #a83a2c;
   --radius-control: 8px;
   --radius-panel: 14px;
   --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: Georgia, "Times New Roman", serif;
   --font-num: ui-monospace, "SF Mono", Menlo, monospace;
   --step-1: 4px;
   --step-2: 8px;
@@ -31,7 +32,7 @@ body {
   text-wrap: pretty;
 }
 h1, h2, h3 { margin: 0; letter-spacing: -0.02em; text-wrap: balance; }
-h1 { font-size: 30px; line-height: 1.15; font-weight: 600; }
+h1 { font-family: var(--font-display); font-size: 32px; line-height: 1.15; font-weight: 600; }
 h2 { font-size: 20px; line-height: 1.2; font-weight: 600; }
 h3 { font-size: 16px; line-height: 1.25; font-weight: 600; }
 p { margin: 0; }
@@ -55,7 +56,7 @@ a { color: var(--accent); }
 .brand-name { font-family: var(--font-num); font-size: 13px; letter-spacing: 0.02em; color: var(--muted); }
 .top-meta { display: flex; flex-wrap: wrap; gap: var(--step-3); justify-content: flex-end; color: var(--muted); font-size: 13px; }
 .top-meta span { white-space: nowrap; }
-.lede { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr); gap: var(--step-6); padding: var(--step-6) 0 var(--step-5); }
+.lede { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr); gap: var(--step-6); padding: var(--step-4) 0 var(--step-3); }
 .lede p { color: var(--muted); max-width: 62ch; margin-top: var(--step-2); }
 .facts { display: grid; gap: var(--step-2); align-content: start; border-left: 1px solid var(--border); padding-left: var(--step-5); }
 .fact { display: flex; align-items: baseline; justify-content: space-between; gap: var(--step-3); }
@@ -76,9 +77,10 @@ a { color: var(--accent); }
 .count { margin-left: auto; color: var(--muted); font-size: 13px; align-self: center; }
 
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-panel); overflow: hidden; }
-.table-wrap { overflow-x: auto; }
+.table-wrap { overflow-x: auto; max-height: 640px; overflow-y: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { padding: var(--step-3) var(--step-3); border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+thead th { position: sticky; top: 0; z-index: 2; background: var(--surface); }
 th { color: var(--muted); font-size: 12px; font-weight: 500; white-space: nowrap; }
 th button { display: inline-flex; align-items: center; gap: var(--step-1); border: 0; background: none; padding: 0; color: inherit; font: inherit; }
 th button:hover { color: var(--ink); }
@@ -86,12 +88,15 @@ tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--surface); }
 tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
 .num { font-family: var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rank { font-family: var(--font-num); font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.expected { font-family: var(--font-num); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+th.expected-head { text-align: right; }
 .name { display: grid; gap: 2px; }
 .name b { font-weight: 600; }
 .sub { color: var(--muted); font-size: 12px; }
 .pos { color: var(--accent); }
 .neg { color: var(--negative); }
-.bar { width: 120px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--border) 60%, var(--surface)); overflow: hidden; }
+.bar { width: 120px; height: 6px; border-radius: 3px; border: 1px solid var(--border); background: var(--canvas); overflow: hidden; flex: none; }
 .bar i { display: block; height: 100%; background: var(--accent); }
 .implied { display: flex; align-items: center; gap: var(--step-2); }
 .status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
@@ -111,7 +116,7 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
 }
 .detail[hidden] { display: none; }
 .detail { margin: 0 0 0 auto; max-height: 100%; }
-.detail::backdrop { background: rgba(22, 33, 28, 0.28); }
+.detail::backdrop { background: rgba(26, 26, 24, 0.28); }
 .detail-head { display: flex; align-items: start; justify-content: space-between; gap: var(--step-4); }
 .detail-head > div { min-width: 0; }
 .detail-head .sub { overflow-wrap: anywhere; }
@@ -123,25 +128,47 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
 .equation { display: grid; gap: var(--step-2); font-family: var(--font-num); font-size: 13px; }
 .equation div { display: flex; justify-content: space-between; gap: var(--step-3); }
 .equation span { color: var(--muted); }
+/* Waterfall: the expected-value breakdown as steps, each bar's width from the log of its value. */
+.waterfall { display: grid; gap: var(--step-2); }
+.wf-row { display: grid; grid-template-columns: 118px minmax(0, 1fr) auto; gap: var(--step-2); align-items: center; font-size: 12px; }
+.wf-row span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wf-track { height: 10px; border: 1px solid var(--border); border-radius: 3px; background: var(--canvas); overflow: hidden; }
+.wf-track i { display: block; height: 100%; background: var(--accent); }
+.wf-track i.dim { background: color-mix(in srgb, var(--accent) 45%, var(--surface)); }
+.wf-row b { font-family: var(--font-num); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.wf-band { font-family: var(--font-num); font-size: 13px; }
 .steps { margin: 0; padding-left: var(--step-5); display: grid; gap: var(--step-3); }
 .steps li { padding-left: var(--step-1); }
 .steps b { display: block; font-weight: 500; }
 .cost { color: var(--muted); font-size: 12px; font-family: var(--font-num); }
 
-/* KPI strip: the board's headline numbers, read at a glance. */
-.kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--step-2); padding: var(--step-4) 0; border-top: 1px solid var(--border); }
-.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-panel); padding: var(--step-3) var(--step-4); display: grid; gap: 2px; align-content: start; }
-.kpi span { color: var(--muted); font-size: 12px; }
-.kpi b { font-family: var(--font-num); font-size: 17px; font-weight: 600; }
-.kpi small { color: var(--muted); font-size: 11px; line-height: 1.4; }
-.accounted { color: var(--muted); font-size: 13px; padding: 0 0 var(--step-4); border-bottom: 1px solid var(--border); }
-.accounted b { color: var(--ink); font-family: var(--font-num); font-weight: 500; }
+/* Headline bar: the board's key numbers in one row, no boxes, split by hairlines. */
+.headline { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0; padding: var(--step-3) 0; border-top: 1px solid var(--border); }
+.headline-item { display: grid; gap: 1px; align-content: center; padding: 0 var(--step-4); }
+.headline-item:first-child { padding-left: 0; }
+.headline-item + .headline-item { border-left: 1px solid var(--border); }
+.headline-item span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.headline-item b { font-family: var(--font-num); font-size: 17px; font-weight: 600; white-space: nowrap; }
+.headline-item small { color: var(--muted); font-size: 11px; line-height: 1.4; white-space: nowrap; }
+/* Scatter plot: the fit drawn as log-log SVG, between the headline and the controls. */
+.scatter { margin-top: var(--step-3); padding: var(--step-4) var(--step-5); display: grid; gap: var(--step-2); }
+.scatter svg { width: 100%; height: auto; display: block; }
+.scatter .axis { font-family: var(--font-num); font-size: 11px; fill: var(--muted); }
+.scatter .axis-title { font-size: 12px; fill: var(--muted); }
+.scatter .grid { stroke: var(--border); stroke-width: 1; }
+.scatter .fit-line { stroke: var(--accent); stroke-width: 2; fill: none; }
+.scatter .dot { fill: color-mix(in srgb, var(--muted) 55%, var(--surface)); }
+.scatter .dot-top { fill: var(--accent); }
+.scatter .dot-label { font-family: var(--font-num); font-size: 11px; fill: var(--ink); }
+/* Footer: the coverage accounting, kept in full, out of the way. */
+.page-foot { color: var(--muted); font-size: 13px; padding: var(--step-5) 0 var(--step-3); border-top: 1px solid var(--border); margin-top: var(--step-5); }
+.page-foot b { color: var(--ink); font-family: var(--font-num); font-weight: 500; }
 
 /* Farm verdicts: one word per row, coloured by the board's value-to-cost tertile. */
 .verdict { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; white-space: nowrap; }
-.verdict.farm { background: #e3f2ec; color: #0f7a5a; }
-.verdict.thin { background: #fdf3d7; color: #8a6d1a; }
-.verdict.skip { background: #eef1ef; color: #5f6f67; }
+.verdict.farm { background: #dff0e8; color: #0b5e44; }
+.verdict.thin { background: #f7ecd2; color: #7d6212; }
+.verdict.skip { background: #efede8; color: #6b675f; }
 
 /* Sandbox and compare: the board as a tool, below the table. */
 .tool { margin-top: var(--step-4); padding: var(--step-5); display: grid; gap: var(--step-3); }
@@ -163,7 +190,9 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
   .lede { grid-template-columns: 1fr; gap: var(--step-4); }
   .facts { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; padding-top: var(--step-4); }
   .field input { min-width: 0; width: 100%; }
-  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .headline { gap: var(--step-2) 0; }
+  .headline-item { padding: 0 var(--step-3); }
+  .headline-item:first-child { padding-left: 0; }
   .compare-grid { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) {

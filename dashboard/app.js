@@ -1,4 +1,4 @@
-// Token Radar's dashboard (radar-2). It reads window.RADAR (written beside dashboard/ by main.ts)
+// Token Radar's dashboard (radar-3). It reads window.RADAR (written beside dashboard/ by main.ts)
 // and renders the ranked board, a filterable table, a per-protocol detail drawer with the model's
 // own inputs and the protocol's farm plan, plus a model sandbox, a two-protocol compare and a CSV
 // export. No network: every byte it shows is in data.js.
@@ -164,26 +164,101 @@
     );
   }
 
-  function kpis() {
+  function headline() {
     var v = DATA.fit.validation;
     var a = DATA.accounted;
-    return el('div', null,
-      el('div', { class: 'kpis' },
-        el('div', { class: 'kpi' }, el('span', { text: 'Watchlist covered' }), el('b', { text: a.board === DATA.board_size ? DATA.watchlist_size + ' / ' + DATA.watchlist_size : 'incomplete' }), el('small', { text: 'every watchlist slug is on the board' })),
-        el('div', { class: 'kpi' }, el('span', { text: 'Board rows' }), el('b', { text: String(DATA.board_size) }), el('small', { text: DATA.watchlist_size + ' watchlist + ' + DATA.early_size + ' early' })),
-        el('div', { class: 'kpi' }, el('span', { text: 'Fitted slope' }), el('b', { text: DATA.fit.slope.toFixed(2) }), el('small', { text: 'log(mcap) on log(TVL), ' + DATA.fit.fitted_on + ' traded protocols' })),
-        el('div', { class: 'kpi' }, el('span', { text: 'Held-out error' }), el('b', { text: 'x' + v.median_factor.toFixed(2) }), el('small', { text: 'median, ' + v.test_n + ' unseen tokens; starter x' + v.starter_median_factor.toFixed(2) })),
-        el('div', { class: 'kpi' }, el('span', { text: 'P10-P90 coverage' }), el('b', { text: Math.round(v.coverage * 100) + '%' }), el('small', { text: v.coverage_n + ' of ' + v.test_n + ' held-out caps inside the band' })),
-        el('div', { class: 'kpi' }, el('span', { text: 'Snapshot' }), el('b', { text: DATA.as_of }), el('small', { text: 'sealed DefiLlama index' }))
-      ),
-      el('p', { class: 'accounted' },
-        el('b', { text: String(a.total) }), ' protocols accounted for: ',
-        el('b', { text: String(a.board) }), ' on the board, ',
-        el('b', { text: String(a.live) }), ' in the live view, ',
-        el('b', { text: String(a.traded_not_live) }), ' traded but below the live top ' + DATA.live_size + ', ',
-        el('b', { text: String(a.pre_token_not_rankable) }), ' pre-token but not rankable (exchange or versioned pool), ',
-        el('b', { text: String(a.rankable_above_floor_not_watchlist) }), ' rankable above the floor but not on the watchlist.'
-      )
+    function item(label, value, note) {
+      return el('div', { class: 'headline-item' },
+        el('span', { text: label }), el('b', { text: value }),
+        note ? el('small', { text: note }) : null);
+    }
+    return el('div', { class: 'headline' },
+      item('Watchlist covered', a.board === DATA.board_size ? DATA.watchlist_size + ' / ' + DATA.watchlist_size : 'incomplete', 'every watchlist slug is on the board'),
+      item('Board rows', String(DATA.board_size), DATA.watchlist_size + ' watchlist + ' + DATA.early_size + ' early'),
+      item('Fitted slope', DATA.fit.slope.toFixed(2), 'log(mcap) on log(TVL), ' + DATA.fit.fitted_on + ' traded protocols'),
+      item('Held-out error', 'x' + v.median_factor.toFixed(2), 'median, ' + v.test_n + ' unseen tokens; starter x' + v.starter_median_factor.toFixed(2)),
+      item('P10-P90 coverage', Math.round(v.coverage * 100) + '%', v.coverage_n + ' of ' + v.test_n + ' held-out caps inside the band'),
+      item('Snapshot', DATA.as_of, 'sealed DefiLlama index')
+    );
+  }
+
+  function footer() {
+    var a = DATA.accounted;
+    return el('footer', { class: 'page-foot' },
+      el('b', { text: String(a.total) }), ' protocols accounted for: ',
+      el('b', { text: String(a.board) }), ' on the board, ',
+      el('b', { text: String(a.live) }), ' in the live view, ',
+      el('b', { text: String(a.traded_not_live) }), ' traded but below the live top ' + DATA.live_size + ', ',
+      el('b', { text: String(a.pre_token_not_rankable) }), ' pre-token but not rankable (exchange or versioned pool), ',
+      el('b', { text: String(a.rankable_above_floor_not_watchlist) }), ' rankable above the floor but not on the watchlist.'
+    );
+  }
+
+  // The fit, drawn: a log-log scatter of the board rows' TVL against their raw implied value,
+  // with the fitted line. The traded rows that fitted the line are not in data.js, so the dots
+  // are the board's implied values, not traded market caps, and the caption says so.
+  function scatter() {
+    var f = DATA.fit;
+    var W = 640, H = 340, L = 56, R = 16, T = 28, B = 36;
+    var pw = W - L - R, ph = H - T - B;
+    var x0 = Math.log(1e6), x1 = Math.log(1e10), y0 = Math.log(7e5), y1 = Math.log(1e8);
+    function px(tvl) { return L + (Math.log(tvl) - x0) / (x1 - x0) * pw; }
+    function py(v) { return T + (y1 - Math.log(v)) / (y1 - y0) * ph; }
+    function fitY(tvl) { return Math.exp(f.intercept + f.slope * Math.log(tvl)); }
+    function fmtTick(n) {
+      if (n >= 1e9) return '$' + (n / 1e9) + 'B';
+      if (n >= 1e6) return '$' + (n / 1e6) + 'M';
+      return '$' + n;
+    }
+    var lineX0 = 1e6, lineX1 = 1e10;
+    if (fitY(lineX1) > 1e8) lineX1 = Math.exp((Math.log(1e8) - f.intercept) / f.slope);
+    if (fitY(lineX0) < 1e6) lineX0 = Math.exp((Math.log(1e6) - f.intercept) / f.slope);
+    var s = [];
+    s.push('<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Log-log scatter of board rows: TVL against raw implied value, with the fitted line">');
+    s.push('<defs><clipPath id="plot"><rect x="' + L + '" y="' + T + '" width="' + pw + '" height="' + ph + '"/></clipPath></defs>');
+    [1e6, 1e7, 1e8, 1e9, 1e10].forEach(function (t) {
+      var x = px(t).toFixed(1);
+      s.push('<line class="grid" x1="' + x + '" y1="' + T + '" x2="' + x + '" y2="' + (T + ph) + '"/>');
+      s.push('<text class="axis" x="' + x + '" y="' + (H - 18) + '" text-anchor="middle">' + fmtTick(t) + '</text>');
+    });
+    [1e6, 1e7, 1e8].forEach(function (t) {
+      var y = py(t).toFixed(1);
+      s.push('<line class="grid" x1="' + L + '" y1="' + y + '" x2="' + (L + pw) + '" y2="' + y + '"/>');
+      s.push('<text class="axis" x="' + (L - 8) + '" y="' + (+y + 4) + '" text-anchor="end">' + fmtTick(t) + '</text>');
+    });
+    s.push('<text class="axis-title" x="' + (L + pw / 2) + '" y="' + (H - 2) + '" text-anchor="middle">TVL (log scale)</text>');
+    s.push('<text class="axis-title" x="' + L + '" y="' + (T - 8) + '" text-anchor="start">Raw implied value (log scale)</text>');
+    s.push('<g clip-path="url(#plot)"><line class="fit-line" x1="' + px(lineX0).toFixed(1) + '" y1="' + py(fitY(lineX0)).toFixed(1) + '" x2="' + px(lineX1).toFixed(1) + '" y2="' + py(fitY(lineX1)).toFixed(1) + '"/>');
+    DATA.rows.forEach(function (r) {
+      var top = r.rank <= 5;
+      s.push('<circle class="' + (top ? 'dot-top' : 'dot') + '" cx="' + px(r.tvl_usd).toFixed(1) + '" cy="' + py(r.raw_implied_value_usd).toFixed(1) + '" r="' + (top ? 4 : 2.5) + '"/>');
+    });
+    s.push('</g>');
+    // Top-5 labels, in rank order; a label that would land on an earlier one is shifted
+    // down until it clears it, so clustered dots (Veda and Gauntlet sit close) stay readable.
+    var placed = [];
+    DATA.rows.filter(function (r) { return r.rank <= 5; }).forEach(function (r) {
+      var x = px(r.tvl_usd), y = py(r.raw_implied_value_usd);
+      var anchor = x > W - 150 ? 'end' : 'start';
+      var lx = anchor === 'end' ? x - 8 : x + 8;
+      var w = r.name.length * 6.6 + 4;
+      var ly = y + 4, tries = 0;
+      function boxFor(yy) {
+        return { x0: anchor === 'end' ? lx - w : lx, x1: anchor === 'end' ? lx : lx + w, y0: yy - 11, y1: yy + 3 };
+      }
+      var box = boxFor(ly);
+      while (tries < 5 && placed.some(function (b) { return box.x0 < b.x1 + 4 && box.x1 > b.x0 - 4 && box.y0 < b.y1 + 4 && box.y1 > b.y0 - 4; })) {
+        ly += 16; box = boxFor(ly); tries++;
+      }
+      if (ly > H - 24) ly = H - 24;
+      placed.push(boxFor(ly));
+      s.push('<text class="dot-label" x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1) + '" text-anchor="' + anchor + '">' + r.name.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</text>');
+    });
+    s.push('</svg>');
+    return el('section', { class: 'panel scatter', 'aria-label': 'The fit, drawn' },
+      el('h2', { text: 'The fit, drawn' }),
+      el('p', { class: 'sub', text: 'Each dot is a board row: its TVL against its raw implied value, on log scales. The line is the fitted log-log line (intercept ' + f.intercept.toFixed(2) + ', slope ' + f.slope.toFixed(2) + ') before category, growth and maturity adjustments; the dots scatter around it by those adjustments. The top five rows are named. These are implied values, not traded market caps.' }),
+      el('div', { html: s.join('') })
     );
   }
 
@@ -241,8 +316,8 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
 
-  function sortHeader(key, label) {
-    return el('th', { scope: 'col' },
+  function sortHeader(key, label, thClass) {
+    return el('th', { scope: 'col', 'class': thClass || null },
       el('button', { type: 'button', onclick: function () { if (state.sort === key) state.dir = -state.dir; else { state.sort = key; state.dir = -1; } render(); } },
         label,
         state.sort === key ? el('span', { 'aria-hidden': 'true', text: state.dir < 0 ? ' v' : ' ^' }) : null
@@ -259,21 +334,24 @@
         el('button', { class: 'button primary', type: 'button', text: 'Clear filters', onclick: function () { state.q = ''; state.category = 'all'; state.chain = 'all'; state.verdict = 'all'; writeHash(); render(); } })
       ));
     }
-    var max = 0;
-    list.forEach(function (r) { var v = displayedValue(r); if (v > max) max = v; });
-    if (max <= 0) max = 1;
+    // Log scale for the value bar: expected values span orders of magnitude, so a linear
+    // bar would leave every row below the top few looking empty.
+    var logMin = Infinity, logMax = -Infinity;
+    list.forEach(function (r) { var v = Math.max(1, displayedValue(r)); logMin = Math.min(logMin, Math.log(v)); logMax = Math.max(logMax, Math.log(v)); });
+    if (!(logMax > logMin)) { logMin = 0; logMax = 1; }
     var tbody = el('tbody');
     list.forEach(function (r) {
       var growth = r.change_7d === null ? 'n/a' : fmtPct(r.change_7d);
       var growthClass = r.change_7d === null ? '' : r.change_7d >= 0 ? 'pos' : 'neg';
       var value = displayedValue(r);
+      var barPct = Math.max(4, Math.round((Math.log(Math.max(1, value)) - logMin) / (logMax - logMin) * 100));
       var tr = el('tr', {
         'data-selected': state.selected === r.slug ? 'true' : 'false',
         tabindex: '0',
         onclick: function () { openDetail(r.slug); },
         onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
       },
-        el('td', { class: 'num', text: String(r.rank) }),
+        el('td', { class: 'rank', text: String(r.rank) }),
         el('td', null, el('div', { class: 'name' },
           el('b', { text: r.name }),
           el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') })
@@ -283,8 +361,8 @@
         el('td', { class: 'num', text: fmtAge(r.age_days) }),
         el('td', { class: 'num', text: fmtOdds(r.token_odds) }),
         el('td', null, el('div', { class: 'implied' },
-          el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((value / max) * 100)) + '%' })),
-          el('span', { class: 'num', text: fmtUsd(value) })
+          el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + barPct + '%' })),
+          el('span', { class: 'expected', text: fmtUsd(value) })
         )),
         el('td', null, el('span', { class: 'verdict ' + r.verdict.toLowerCase(), text: r.verdict }))
       );
@@ -301,7 +379,7 @@
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
             sortHeader('odds', 'Token odds'),
-            sortHeader('implied', 'Expected value'),
+            sortHeader('implied', 'Expected value', 'expected-head'),
             el('th', { scope: 'col', text: 'Farm' })
           )),
           tbody
@@ -428,6 +506,22 @@
     var ageCount = DATA.fit.age_counts[band];
     var catOdds = DATA.fit.category_odds[row.category || '(null)'];
     var ageOdds = DATA.fit.age_odds[band];
+    // Waterfall: the chain from the fitted base to the expected value. Each bar's width is
+    // a log scale over the step range (12% floor plus 88% of the log span), so the odds step
+    // is visibly shorter than the raw step while even a small-odds row keeps a visible bar.
+    var base = recomputed.raw / (recomputed.growthMult * recomputed.maturity);
+    var afterGrowth = base * recomputed.growthMult;
+    var wfLo = Math.log(Math.min(base, afterGrowth, row.raw_implied_value_usd, row.implied_value_usd));
+    var wfHi = Math.log(Math.max(base, afterGrowth, row.raw_implied_value_usd, row.implied_value_usd));
+    function wfRow(label, value, dim) {
+      var w = wfHi > wfLo ? 12 + Math.round(88 * (Math.log(Math.max(1, value)) - wfLo) / (wfHi - wfLo)) : 100;
+      var bar = el('i', { style: 'width:' + w + '%' });
+      if (dim) bar.className = 'dim';
+      return el('div', { class: 'wf-row' },
+        el('span', { text: label }),
+        el('div', { class: 'wf-track' }, bar),
+        el('b', { text: fmtUsd(value) }));
+    }
     dialog.appendChild(el('div', { class: 'detail-head' },
       el('div', null,
         el('span', { class: 'brand-name', text: 'Rank ' + row.rank + ' of ' + DATA.board_size }),
@@ -438,18 +532,15 @@
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Expected value, term by term' }),
-      el('div', { class: 'equation' },
-        el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
-        el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
-        el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
-        el('div', null, el('span', { text: 'Category effect' }), el('b', { class: 'num', text: (row.category_effect >= 0 ? '+' : '') + row.category_effect.toFixed(2) + ' log points' })),
-        el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
-        el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
-        el('div', null, el('span', { text: 'Raw implied value' }), el('b', { class: 'num', text: fmtUsd(row.raw_implied_value_usd) })),
-        el('div', null, el('span', { text: 'Token odds' }), el('b', { class: 'num', text: fmtOdds(row.token_odds) })),
-        el('div', null, el('span', { text: 'Expected value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
-        el('div', null, el('span', { text: 'P10-P90 band' }), el('b', { class: 'num', text: fmtUsd(row.p10_usd) + ' - ' + fmtUsd(row.p90_usd) }))
+      el('p', { class: 'sub', text: 'TVL ' + fmtUsd(row.tvl_usd) + ' · 7-day growth ' + fmtPct(row.change_7d) + ' · Age with no token ' + fmtAge(row.age_days) + ' · Category effect ' + (row.category_effect >= 0 ? '+' : '') + row.category_effect.toFixed(2) + ' log points' }),
+      el('div', { class: 'waterfall' },
+        wfRow('Base from TVL', base, true),
+        wfRow('x Growth ' + recomputed.growthMult.toFixed(2), afterGrowth, true),
+        wfRow('x Maturity ' + recomputed.maturity.toFixed(2), row.raw_implied_value_usd, true),
+        wfRow('x Odds ' + fmtOdds(row.token_odds), row.implied_value_usd, false)
       ),
+      el('div', { class: 'wf-band' }, 'P10-P90 band ', el('b', { text: fmtUsd(row.p10_usd) + ' - ' + fmtUsd(row.p90_usd) })),
+      el('p', { class: 'sub', text: 'Raw implied value ' + fmtUsd(row.raw_implied_value_usd) + ' is the base after growth and maturity; expected value is raw times token odds.' }),
       el('p', { class: 'sub', text: 'Token odds: ' + (catOdds !== undefined ? 'category ' + fmtOdds(catOdds) + (catCount ? ' (' + catCount.t + ' of ' + catCount.n + ' peers record a token)' : '') : 'category fallback ' + fmtOdds(DATA.fit.overall_odds)) + ', age band ' + band + ' ' + fmtOdds(ageOdds) + (ageCount ? ' (' + ageCount.t + ' of ' + ageCount.n + ' peers record a token)' : '') + ', blended half and half.' }),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the page recomputes this row as ' + fmtUsd(recomputedRaw) + (recomputedRaw === row.raw_implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' The band is wide because launch values vary enormously even among traded peers. This is an estimate, not a price.' })
     ));
@@ -475,7 +566,8 @@
     var shell = el('div', { class: 'shell' });
     shell.appendChild(header());
     shell.appendChild(lede());
-    shell.appendChild(kpis());
+    shell.appendChild(headline());
+    shell.appendChild(scatter());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     if (state.tab === 'pre-token') {
@@ -483,6 +575,7 @@
       shell.appendChild(sandboxPanel());
       shell.appendChild(comparePanel());
     }
+    shell.appendChild(footer());
     app.appendChild(shell);
     app.setAttribute('aria-busy', 'false');
     if (!dialog.isConnected) app.appendChild(dialog);

@@ -6,7 +6,7 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed
 // into the ranked board.
 //
-// radar-2 fits its value model from the protocols whose tokens already trade, instead of a fixed
+// radar-3 fits its value model from the protocols whose tokens already trade, instead of a fixed
 // multiple. On the sealed snapshot the fit is a log-log comps regression:
 //
 //   log(market cap) = a + b x log(TVL) + category effect
@@ -15,7 +15,9 @@
 // or -1 is a bad figure, not a price, and is left out of the fit). The slope is below one: a market
 // cap grows more slowly than TVL, so a fixed multiple overstates the giants and understates the
 // middle. The category effect is a category's mean residual, used only where at least three traded
-// protocols carry the category; anything else falls back to the global line. Growth and maturity
+// protocols carry the category, and shrunk toward zero by n/(n+5): a mean residual from only a few
+// traded protocols is noisy, so a small category's effect is pulled toward the global line instead
+// of being taken at face value. Anything else falls back to the global line. Growth and maturity
 // multiply the fitted value, with weights chosen by 5-fold cross-validation on the same traded set
 // (growth 0.25, maturity 0.8 to 1.2; the cross-validated median log error is 1.236, against 1.217
 // for the best grid point at growth 0, so the growth term costs almost nothing and keeps the term
@@ -82,7 +84,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries (all of them). */
 export const EARLY_ROWS = 200;
@@ -329,7 +331,13 @@ function fitLine(traded: SnapshotProtocol[]): { intercept: number; slope: number
   const effects: Record<string, number> = {};
   for (const c of Object.keys(residuals).sort()) {
     const rs = residuals[c]!;
-    if (rs.length >= 3) effects[c] = rs.reduce((a, b) => a + b, 0) / rs.length;
+    if (rs.length >= 3) {
+      const mean = rs.reduce((a, b) => a + b, 0) / rs.length;
+      // Shrink toward zero by n/(n+5): a category's mean residual from only a few traded
+      // protocols is noisy, so a small category's effect is pulled toward the global line.
+      // On the held-out split this lowers the median error and lifts P10-P90 coverage toward 80%.
+      effects[c] = mean * (rs.length / (rs.length + 5));
+    }
   }
   return { intercept, slope, effects };
 }
