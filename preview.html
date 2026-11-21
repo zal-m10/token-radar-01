@@ -202,18 +202,9 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
     if (n === null || n === undefined || !isFinite(n)) return 'n/a';
-    if (Math.abs(n) >= 1e9) return '
-</body>
-</html>
- + (n / 1e9).toFixed(2) + 'B';
-    if (Math.abs(n) >= 1e6) return '
-</body>
-</html>
- + (n / 1e6).toFixed(1) + 'M';
-    if (Math.abs(n) >= 1e3) return '
-</body>
-</html>
- + Math.round(n / 1e3) + 'K';
+    if (Math.abs(n) >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
+    if (Math.abs(n) >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
+    if (Math.abs(n) >= 1e3) return '$' + Math.round(n / 1e3) + 'K';
     return usd.format(n);
   }
   function fmtPct(n) {
@@ -345,10 +336,7 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by expected launch value' }),
-        el('p', { text: 'The watchlist is the floor: every protocol with at least 
-</body>
-</html>
- + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' pre-token protocols below that floor. Expected value is raw implied value times token odds; both are shown for every row. Implied value is a model, not a promise.' })
+        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' pre-token protocols below that floor. Expected value is raw implied value times token odds; both are shown for every row. Implied value is a model, not a promise.' })
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
@@ -590,10 +578,7 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
         ['Age', fmtAge(r.age_days)], ['Raw implied', fmtUsd(r.raw_implied_value_usd)],
         ['Token odds', fmtOdds(r.token_odds)], ['Expected value', fmtUsd(r.implied_value_usd)],
         ['P10-P90', fmtUsd(r.p10_usd) + ' - ' + fmtUsd(r.p90_usd)],
-        ['Farm cost', '
-</body>
-</html>
- + r.farm_cost_usd], ['Verdict', r.verdict]
+        ['Farm cost', '$' + r.farm_cost_usd], ['Verdict', r.verdict]
       ];
       return el('div', { class: 'compare-card' },
         el('h3', { text: r.name }),
@@ -654,13 +639,7 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
-      el('p', { class: 'sub', text: 'Verdict ' + row.verdict + ': 
-</body>
-</html>
- + row.farm_cost_usd + ' to farm (deposit plus gas), 
-</body>
-</html>
- + Math.round(row.value_per_1000_cost).toLocaleString('en-US') + ' of expected value per $1,000 of cost.' }),
+      el('p', { class: 'sub', text: 'Verdict ' + row.verdict + ': $' + row.farm_cost_usd + ' to farm (deposit plus gas), $' + Math.round(row.value_per_1000_cost).toLocaleString('en-US') + ' of expected value per $1,000 of cost.' }),
       el('ol', { class: 'steps' }, row.farm_steps.map(function (s) {
         var at = s.indexOf(' Cost: ');
         var action = at >= 0 ? s.slice(0, at) : s;
