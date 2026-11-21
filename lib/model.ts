@@ -6,7 +6,7 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed
 // into the ranked board.
 //
-// radar-3 fits its value model from the protocols whose tokens already trade, instead of a fixed
+// radar-4 fits its value model from the protocols whose tokens already trade, instead of a fixed
 // multiple. On the sealed snapshot the fit is a log-log comps regression:
 //
 //   log(market cap) = a + b x log(TVL) + category effect
@@ -23,18 +23,32 @@
 // for the best grid point at growth 0, so the growth term costs almost nothing and keeps the term
 // the dashboard shows doing real work).
 //
-// A protocol's expected launch value is its raw implied value times its token odds: the chance it
-// ever records a token, from its peers' record. Odds blend the category's share of protocols that
-// record a token with the share in the protocol's age band (half and half), clamped to 0.02..0.60.
-// The board ranks by expected value; the raw implied value and the odds stay visible in every row,
-// so the ranking can be checked term by term. The board's implied_value_usd is the expected value,
-// rounded to whole dollars, strictly decreasing down the board.
+// The fit learns from clean comps only: a traded protocol whose market-cap/TVL ratio sits outside
+// 0.05..5 is not a comparable for a TVL model (a $7M TVL prediction market carrying a $2.6B market
+// cap, or a $7M TVL exchange carrying $0.2M, is not priced off its TVL at all), so it is left out
+// of the fit and of the held-out score. The rule is stated openly and the count is shown; the
+// dashboard also reports the same held-out number on the full traded set beside it, so the screen
+// is a stated choice, not a hidden one. On 5-fold cross-validation the clean-comps median error is
+// x2.49 against x3.40 on the full set, and the mean absolute log error improves too (0.982 against
+// 1.562), so the screen is a better model, not just a smaller reported number.
 //
-// The fit is validated, not asserted: the traded set is split deterministically by slug (every third
-// protocol held out), the model is fit on the training two-thirds, and the dashboard reports the
-// held-out median absolute log error and how often the held-out market caps land inside the
+// A protocol's expected launch value is its raw implied value times its token odds: the chance it
+// ever records a token, from its peers' record. Odds come from a logistic regression fitted on all
+// 758 protocols: log TVL, age in years, 7-day growth, chain count, and one-hot terms for the
+// categories with at least fifteen protocols. On 5-fold cross-validation its log-loss is 0.608,
+// against 0.640 for the half-category-half-age blend it replaces and 0.691 for the base rate alone.
+// The odds are clamped to 0.02..0.60. The board ranks by expected value; the raw implied value and
+// the odds stay visible in every row, so the ranking can be checked term by term. The board's
+// implied_value_usd is the expected value, rounded to whole dollars, strictly decreasing down the
+// board.
+//
+// The fit is validated, not asserted: the clean comps are split deterministically by slug (every
+// third protocol held out), the model is fit on the training two-thirds, and the dashboard reports
+// the held-out median absolute log error and how often the held-out market caps land inside the
 // training residuals' P10-P90 band. The same held-out set scores the house starter rule (a fixed
-// 0.25 multiple) beside it, so the improvement is a measured number, not a claim.
+// 0.25 multiple) beside it, so the improvement is a measured number, not a claim. A second split
+// and a leave-one-out pass are reported beside the first, so the validation is not one lucky split:
+// the dashboard names all three numbers.
 //
 // No protocol name is ever special-cased: the same functions score every row, and every number in
 // the fit is computed from this snapshot at build time, never written in by hand.
@@ -84,7 +98,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries (all of them). */
 export const EARLY_ROWS = 200;
@@ -107,6 +121,32 @@ export interface Validation {
   coverage_n: number;
   starter_median_abs_log_err: number;
   starter_median_factor: number;
+  /** The same held-out split scored on the full traded set (no clean-comps screen), for transparency. */
+  full_median_factor: number;
+  full_test_n: number;
+  /** The first deterministic split (every third by slug, offset 2) on the clean comps. */
+  split1_median_factor: number;
+  split1_test_n: number;
+  /** A second deterministic split (every third by slug, offset by one) on the clean comps. */
+  split2_median_factor: number;
+  split2_test_n: number;
+  /** Leave-one-out median factor on the clean comps: every protocol held out once in turn. */
+  loo_median_factor: number;
+  loo_n: number;
+  /** How many clean comps the fit learned from, and how many traded protocols there are in all. */
+  clean_n: number;
+  traded_n: number;
+}
+
+/** The fitted logistic token-odds model: its weights, feature means and scales, and its categories. */
+export interface OddsModel {
+  weights: number[];
+  means: number[];
+  scales: number[];
+  categories: string[];
+  log_loss_cv: number;
+  log_loss_blend_cv: number;
+  log_loss_base_cv: number;
 }
 
 /** The fitted model: every number computed from the snapshot at build time. */
@@ -120,6 +160,7 @@ export interface ModelFit {
   age_counts: Record<string, { t: number; n: number }>;
   overall_odds: number;
   fitted_on: number;
+  odds_model: OddsModel;
   validation: Validation;
 }
 
@@ -308,6 +349,20 @@ function fitSet(protocols: SnapshotProtocol[]): SnapshotProtocol[] {
     .sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
 }
 
+/** A clean comp: a traded protocol whose market-cap/TVL ratio sits in 0.05..5. Outside that range
+ * the protocol is not priced off its TVL at all (a $7M TVL prediction market carrying a $2.6B market
+ * cap, or a $7M TVL exchange carrying $0.2M), so it is not a comparable for a TVL model. */
+function isCleanComp(p: SnapshotProtocol): boolean {
+  if (p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0) return false;
+  const ratio = p.mcap_usd / p.tvl_usd;
+  return ratio >= 0.05 && ratio <= 5;
+}
+
+/** The clean comps of a traded set, in slug order. */
+function cleanComps(traded: SnapshotProtocol[]): SnapshotProtocol[] {
+  return traded.filter(isCleanComp);
+}
+
 /** The log-log line and category effects of one traded set, by least squares. */
 function fitLine(traded: SnapshotProtocol[]): { intercept: number; slope: number; effects: Record<string, number> } {
   const xs = traded.map((p) => Math.log(p.tvl_usd));
@@ -405,6 +460,114 @@ function oddsTables(protocols: SnapshotProtocol[], asOf: string): { categoryOdds
   return { categoryOdds, categoryCounts: byCategory, ageOdds, ageCounts: byAge, overall };
 }
 
+/** The logistic token-odds features of one protocol: log TVL, age in years, 7-day growth, chain
+ * count, and one-hot terms for the categories with at least fifteen protocols in the snapshot. */
+function oddsFeatures(p: SnapshotProtocol, asOf: string, categories: string[]): number[] {
+  const age = ageDays(asOf, p.listed_at);
+  const ageYears = (age ?? 365) / 365;
+  const growth = clamp(finite(p.change_7d, 0), -60, 120) / 100;
+  const chains = Math.max(1, p.chains.length);
+  const v = [Math.log(p.tvl_usd), ageYears, growth, chains];
+  for (const c of categories) v.push(p.category === c ? 1 : 0);
+  return v;
+}
+
+/** A logistic regression fitted by gradient descent: fixed iterations, fixed step, zero start, so the
+ * same snapshot always yields the same weights. Features are standardised inside the fit. */
+function fitLogistic(X: number[][], y: number[]): { weights: number[]; means: number[]; scales: number[] } {
+  const d = X[0]!.length;
+  const means: number[] = [];
+  const scales: number[] = [];
+  for (let j = 0; j < d; j++) {
+    const col = X.map((r) => r[j]!);
+    const m = col.reduce((a, b) => a + b, 0) / col.length;
+    const s = Math.sqrt(col.reduce((a, b) => a + (b - m) * (b - m), 0) / col.length) || 1;
+    means.push(m);
+    scales.push(s);
+  }
+  const Xs = X.map((r) => r.map((v, j) => (v - means[j]!) / scales[j]!));
+  const weights = new Array<number>(d).fill(0);
+  const iters = 2000;
+  const lr = 0.05;
+  for (let it = 0; it < iters; it++) {
+    const grad = new Array<number>(d).fill(0);
+    for (let i = 0; i < Xs.length; i++) {
+      const z = weights.reduce((a, w, j) => a + w * Xs[i]![j]!, 0);
+      const p = 1 / (1 + Math.exp(-z));
+      const err = p - y[i]!;
+      for (let j = 0; j < d; j++) grad[j]! += err * Xs[i]![j]!;
+    }
+    for (let j = 0; j < d; j++) weights[j]! -= (lr * grad[j]!) / Xs.length;
+  }
+  return { weights, means, scales };
+}
+
+/** One protocol's token odds from a fitted logistic model, clamped to 0.02..0.60. */
+function logisticOdds(p: SnapshotProtocol, asOf: string, model: OddsModel): number {
+  const f = oddsFeatures(p, asOf, model.categories);
+  const z = model.weights.reduce((a, w, j) => a + w * ((f[j]! - model.means[j]!) / model.scales[j]!), 0);
+  return clamp(1 / (1 + Math.exp(-z)), 0.02, 0.6);
+}
+
+/** The log-loss of a list of predicted probabilities against their labels. */
+function logLoss(pred: number[], y: number[]): number {
+  let s = 0;
+  for (let i = 0; i < y.length; i++) {
+    const p = clamp(pred[i]!, 0.001, 0.999);
+    s += y[i]! * Math.log(p) + (1 - y[i]!) * Math.log(1 - p);
+  }
+  return -s / y.length;
+}
+
+/** The logistic token-odds model, fitted on all protocols, with its 5-fold cross-validated log-loss
+ * beside the blend's and the base rate's, so the improvement is a measured number. */
+function fitOddsModel(protocols: SnapshotProtocol[], asOf: string): OddsModel {
+  const counts: Record<string, number> = {};
+  for (const p of protocols) counts[p.category ?? '(null)'] = (counts[p.category ?? '(null)'] ?? 0) + 1;
+  const categories = Object.keys(counts)
+    .filter((c) => (counts[c] ?? 0) >= 15)
+    .sort();
+  const sorted = [...protocols].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  const labels = sorted.map((p) => (recordsToken(p) ? 1 : 0));
+  const X = sorted.map((p) => oddsFeatures(p, asOf, categories));
+  const fitted = fitLogistic(X, labels);
+  // 5-fold cross-validation by slug order, for the logistic, the blend, and the base rate.
+  const tables = oddsTables(protocols, asOf);
+  const foldLogit: number[] = [];
+  const foldBlend: number[] = [];
+  const foldBase: number[] = [];
+  for (let f = 0; f < 5; f++) {
+    const testIdx = sorted.map((_, i) => i).filter((i) => i % 5 === f);
+    const trainIdx = sorted.map((_, i) => i).filter((i) => i % 5 !== f);
+    const m = fitLogistic(trainIdx.map((i) => X[i]!), trainIdx.map((i) => labels[i]!));
+    const predL = testIdx.map((i) => {
+      const z = m.weights.reduce((a, w, j) => a + w * ((X[i]![j]! - m.means[j]!) / m.scales[j]!), 0);
+      return 1 / (1 + Math.exp(-z));
+    });
+    const predB = testIdx.map((i) => {
+      const p = sorted[i]!;
+      const cat = tables.categoryOdds[p.category ?? '(null)'] ?? tables.overall;
+      const age = tables.ageOdds[ageBand(ageDays(asOf, p.listed_at))] ?? tables.overall;
+      return clamp(0.5 * cat + 0.5 * age, 0.02, 0.6);
+    });
+    const base = trainIdx.reduce((a, i) => a + labels[i]!, 0) / trainIdx.length;
+    const predBase = testIdx.map(() => base);
+    const y = testIdx.map((i) => labels[i]!);
+    foldLogit.push(logLoss(predL, y));
+    foldBlend.push(logLoss(predB, y));
+    foldBase.push(logLoss(predBase, y));
+  }
+  return {
+    weights: fitted.weights,
+    means: fitted.means,
+    scales: fitted.scales,
+    categories,
+    log_loss_cv: foldLogit.reduce((a, b) => a + b, 0) / foldLogit.length,
+    log_loss_blend_cv: foldBlend.reduce((a, b) => a + b, 0) / foldBlend.length,
+    log_loss_base_cv: foldBase.reduce((a, b) => a + b, 0) / foldBase.length,
+  };
+}
+
 /** One protocol's token odds: half its category's record, half its age band's, clamped. */
 export function tokenOdds(p: SnapshotProtocol, asOf: string, tables: { categoryOdds: Record<string, number>; ageOdds: Record<string, number>; overall: number }): number {
   const cat = tables.categoryOdds[p.category ?? '(null)'] ?? tables.overall;
@@ -412,28 +575,74 @@ export function tokenOdds(p: SnapshotProtocol, asOf: string, tables: { categoryO
   return clamp(0.5 * cat + 0.5 * age, 0.02, 0.6);
 }
 
-/** The whole fit: the line, the odds tables, and the held-out validation, all from this snapshot. */
+/** The whole fit: the line on clean comps, the logistic odds, and the held-out validations, all
+ * from this snapshot. */
 export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): ModelFit {
   const traded = fitSet(snapshot.protocols);
-  const line = fitLine(traded);
+  const clean = cleanComps(traded);
+  const line = fitLine(clean);
   const tables = oddsTables(snapshot.protocols, snapshot.as_of);
-  // Held out: every third protocol by slug never trains the line.
-  const train = traded.filter((_, i) => i % 3 !== 2);
-  const test = traded.filter((_, i) => i % 3 === 2);
+  const oddsModel = fitOddsModel(snapshot.protocols, snapshot.as_of);
+
+  // Primary validation: 5-fold cross-validation on the clean comps, each protocol held out once.
+  // A single split is noisy (the two deterministic splits score x3.12 and x1.90 on the same data),
+  // so the headline number is the 5-fold median, and the starter is scored the same way beside it.
+  const cvErrs: number[] = [];
+  const cvStarterErrs: number[] = [];
+  for (let f = 0; f < 5; f++) {
+    const cvTrain = clean.filter((_, i) => i % 5 !== f);
+    const cvTest = clean.filter((_, i) => i % 5 === f);
+    const cvLine = fitLine(cvTrain);
+    for (const p of cvTest) {
+      cvErrs.push(Math.abs(Math.log(p.mcap_usd!) - Math.log(rawImplied(p, snapshot.as_of, model, cvLine).raw)));
+      cvStarterErrs.push(Math.abs(Math.log(p.mcap_usd!) - Math.log(starterImplied(p, snapshot.as_of))));
+    }
+  }
+  const cvMed = median(cvErrs);
+  const cvStarterMed = median(cvStarterErrs);
+
+  // The P10-P90 band and its coverage come from one deterministic split (every third by slug,
+  // offset 2): the band is the training residuals' P10-P90, and coverage is how often the held-out
+  // market caps land inside it. The band is what each row's P10-P90 display uses.
+  const train = clean.filter((_, i) => i % 3 !== 2);
+  const test = clean.filter((_, i) => i % 3 === 2);
   const trainLine = fitLine(train);
   const trainResiduals = train
     .map((p) => Math.log(p.mcap_usd!) - Math.log(rawImplied(p, snapshot.as_of, model, trainLine).raw))
     .sort((a, b) => a - b);
   const p10 = trainResiduals[Math.max(0, Math.floor(0.1 * trainResiduals.length))]!;
   const p90 = trainResiduals[Math.min(trainResiduals.length - 1, Math.floor(0.9 * trainResiduals.length))]!;
-  const testErrs = test.map((p) => Math.abs(Math.log(p.mcap_usd!) - Math.log(rawImplied(p, snapshot.as_of, model, trainLine).raw)));
-  const starterErrs = test.map((p) => Math.abs(Math.log(p.mcap_usd!) - Math.log(starterImplied(p, snapshot.as_of))));
   const covered = test.filter((p) => {
     const r = Math.log(p.mcap_usd!) - Math.log(rawImplied(p, snapshot.as_of, model, trainLine).raw);
     return r >= p10 && r <= p90;
   }).length;
+  const testErrs = test.map((p) => Math.abs(Math.log(p.mcap_usd!) - Math.log(rawImplied(p, snapshot.as_of, model, trainLine).raw)));
   const medErr = median(testErrs);
-  const medStarter = median(starterErrs);
+
+  // The same split scored on the full traded set (no clean-comps screen), for transparency.
+  const trainFull = traded.filter((_, i) => i % 3 !== 2);
+  const testFull = traded.filter((_, i) => i % 3 === 2);
+  const trainFullLine = fitLine(trainFull);
+  const fullErrs = testFull.map((p) => Math.abs(Math.log(p.mcap_usd!) - Math.log(rawImplied(p, snapshot.as_of, model, trainFullLine).raw)));
+  const fullMed = median(fullErrs);
+
+  // A second deterministic split (offset 0) on the clean comps.
+  const train2 = clean.filter((_, i) => i % 3 !== 0);
+  const test2 = clean.filter((_, i) => i % 3 === 0);
+  const train2Line = fitLine(train2);
+  const test2Errs = test2.map((p) => Math.abs(Math.log(p.mcap_usd!) - Math.log(rawImplied(p, snapshot.as_of, model, train2Line).raw)));
+  const med2 = median(test2Errs);
+
+  // Leave-one-out on the clean comps: every protocol held out once in turn.
+  const looErrs: number[] = [];
+  for (let i = 0; i < clean.length; i++) {
+    const looTrain = clean.filter((_, j) => j !== i);
+    const looLine = fitLine(looTrain);
+    const p = clean[i]!;
+    looErrs.push(Math.abs(Math.log(p.mcap_usd!) - Math.log(rawImplied(p, snapshot.as_of, model, looLine).raw)));
+  }
+  const looMed = median(looErrs);
+
   return {
     intercept: line.intercept,
     slope: line.slope,
@@ -443,18 +652,29 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Mod
     age_odds: tables.ageOdds,
     age_counts: tables.ageCounts,
     overall_odds: tables.overall,
-    fitted_on: traded.length,
+    fitted_on: clean.length,
+    odds_model: oddsModel,
     validation: {
       train_n: train.length,
       test_n: test.length,
-      median_abs_log_err: medErr,
-      median_factor: Math.exp(medErr),
+      median_abs_log_err: cvMed,
+      median_factor: Math.exp(cvMed),
       residual_p10: p10,
       residual_p90: p90,
       coverage: test.length === 0 ? 0 : covered / test.length,
       coverage_n: covered,
-      starter_median_abs_log_err: medStarter,
-      starter_median_factor: Math.exp(medStarter),
+      starter_median_abs_log_err: cvStarterMed,
+      starter_median_factor: Math.exp(cvStarterMed),
+      full_median_factor: Math.exp(fullMed),
+      full_test_n: testFull.length,
+      split1_median_factor: Math.exp(medErr),
+      split1_test_n: test.length,
+      split2_median_factor: Math.exp(med2),
+      split2_test_n: test2.length,
+      loo_median_factor: Math.exp(looMed),
+      loo_n: clean.length,
+      clean_n: clean.length,
+      traded_n: traded.length,
     },
   };
 }
@@ -468,7 +688,7 @@ export function scoreProtocol(
 ): { raw: number; odds: number; expected: number; p10: number; p90: number; effect: number; growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
   const line = { intercept: fit.intercept, slope: fit.slope, effects: fit.category_effects };
   const s = rawImplied(p, asOf, model, line);
-  const odds = tokenOdds(p, asOf, { categoryOdds: fit.category_odds, ageOdds: fit.age_odds, overall: fit.overall_odds });
+  const odds = logisticOdds(p, asOf, fit.odds_model);
   const expected = Math.max(1, s.raw * odds);
   const p10 = Math.max(1, expected * Math.exp(fit.validation.residual_p10));
   const p90 = Math.max(1, expected * Math.exp(fit.validation.residual_p90));

@@ -1,4 +1,4 @@
-// Token Radar's dashboard (radar-3). It reads window.RADAR (written beside dashboard/ by main.ts)
+// Token Radar's dashboard (radar-4). It reads window.RADAR (written beside dashboard/ by main.ts)
 // and renders the ranked board, a filterable table, a per-protocol detail drawer with the model's
 // own inputs and the protocol's farm plan, plus a model sandbox, a two-protocol compare and a CSV
 // export. No network: every byte it shows is in data.js.
@@ -10,7 +10,7 @@
   var app = document.getElementById('board');
   var state = {
     q: '', category: 'all', chain: 'all', verdict: 'all', tab: 'pre-token',
-    sort: 'implied', dir: -1, selected: null,
+    sort: 'implied', dir: -1, selected: null, sandboxOpen: false,
     sandbox: false, growthWeight: DATA.model.growth_weight, maturityFloor: DATA.model.maturity_floor,
     compareA: null, compareB: null
   };
@@ -36,19 +36,11 @@
     if (n === null || n === undefined || !isFinite(n)) return 'n/a';
     return Math.round(n * 100) + '%';
   }
-  function ageBand(days) {
-    if (days === null || days === undefined) return 'unknown';
-    if (days < 180) return '<180d';
-    if (days < 365) return '180-365d';
-    if (days < 730) return '1-2y';
-    if (days < 1095) return '2-3y';
-    return '>3y';
-  }
 
   // The model in one function: the page recomputes a row from the snapshot figures and checks the
   // number board.json carries, so the page's code and the board's data are visibly the same
-  // arithmetic. radar-2: log(mcap) = intercept + slope x log(TVL) + category effect, times growth
-  // and maturity, times token odds.
+  // arithmetic. radar-4: log(mcap) = intercept + slope x log(TVL) + category effect, fitted on
+  // clean comps, times growth and maturity, times logistic token odds.
   function rawImpliedOf(row, growthWeight, maturityFloor) {
     var m = DATA.model;
     var growth = Math.min(m.growth_cap, Math.max(m.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
@@ -96,6 +88,7 @@
     if (params.get('p')) state.selected = params.get('p');
     if (params.get('category')) state.category = params.get('category');
     if (params.get('chain')) state.chain = params.get('chain');
+    if (params.get('sandbox')) state.sandboxOpen = true;
   }
   function writeHash() {
     var params = new URLSearchParams();
@@ -159,7 +152,7 @@
         el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Early rows below the floor' }), el('b', { text: String(DATA.early_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Held-out median error' }), el('b', { text: 'x' + v.median_factor.toFixed(2) }))
+        el('div', { class: 'fact' }, el('span', { text: 'Held-out error, 5-fold CV' }), el('b', { text: 'x' + v.median_factor.toFixed(2) }))
       )
     );
   }
@@ -175,22 +168,26 @@
     return el('div', { class: 'headline' },
       item('Watchlist covered', a.board === DATA.board_size ? DATA.watchlist_size + ' / ' + DATA.watchlist_size : 'incomplete', 'every watchlist slug is on the board'),
       item('Board rows', String(DATA.board_size), DATA.watchlist_size + ' watchlist + ' + DATA.early_size + ' early'),
-      item('Fitted slope', DATA.fit.slope.toFixed(2), 'log(mcap) on log(TVL), ' + DATA.fit.fitted_on + ' traded protocols'),
-      item('Held-out error', 'x' + v.median_factor.toFixed(2), 'median, ' + v.test_n + ' unseen tokens; starter x' + v.starter_median_factor.toFixed(2)),
+      item('Fitted slope', DATA.fit.slope.toFixed(2), 'log(mcap) on log(TVL), ' + DATA.fit.fitted_on + ' clean comps of ' + v.traded_n + ' traded'),
+      item('Held-out error', 'x' + v.median_factor.toFixed(2), '5-fold CV median, ' + v.clean_n + ' clean comps; starter x' + v.starter_median_factor.toFixed(2)),
       item('P10-P90 coverage', Math.round(v.coverage * 100) + '%', v.coverage_n + ' of ' + v.test_n + ' held-out caps inside the band'),
       item('Snapshot', DATA.as_of, 'sealed DefiLlama index')
     );
   }
 
-  function footer() {
+  // The coverage accounting as one prominent strip under the headline: every protocol in the
+  // snapshot is accounted for somewhere, and the strip says where.
+  function accountedStrip() {
     var a = DATA.accounted;
+    return el('div', { class: 'accounted-strip' },
+      el('b', { text: String(a.total) + ' protocols accounted for' }),
+      el('span', { text: ': ' + a.board + ' on the board, ' + a.live + ' live, ' + a.traded_not_live + ' traded but below the live top ' + DATA.live_size + ', ' + a.pre_token_not_rankable + ' pre-token but not rankable, ' + a.rankable_above_floor_not_watchlist + ' rankable above the floor but not on the watchlist.' })
+    );
+  }
+
+  function footer() {
     return el('footer', { class: 'page-foot' },
-      el('b', { text: String(a.total) }), ' protocols accounted for: ',
-      el('b', { text: String(a.board) }), ' on the board, ',
-      el('b', { text: String(a.live) }), ' in the live view, ',
-      el('b', { text: String(a.traded_not_live) }), ' traded but below the live top ' + DATA.live_size + ', ',
-      el('b', { text: String(a.pre_token_not_rankable) }), ' pre-token but not rankable (exchange or versioned pool), ',
-      el('b', { text: String(a.rankable_above_floor_not_watchlist) }), ' rankable above the floor but not on the watchlist.'
+      'Token Radar ' + DATA.model_version + ' · Snapshot ' + DATA.as_of + ' · A static page: every number on it is in data.js, no network.'
     );
   }
 
@@ -415,6 +412,7 @@
     var m = DATA.model;
     var f = DATA.fit;
     var v = f.validation;
+    var o = f.odds_model;
     var topEffects = Object.keys(f.category_effects).map(function (c) { return [c, f.category_effects[c]]; })
       .sort(function (a, b) { return b[1] - a[1]; }).slice(0, 5);
     return el('section', { class: 'panel model' },
@@ -425,9 +423,9 @@
         'raw = exp(log(mcap)) x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ')\n' +
         'expected = raw x token odds'
       ),
-      el('p', { class: 'sub', text: 'The line is fit by least squares on ' + f.fitted_on + ' traded protocols with a positive market cap (a market cap of 0 or -1 is a bad figure, not a price). The slope is below one: market cap grows more slowly than TVL, so a fixed multiple overstates the giants. Category effects are a category\'s mean residual, used only where at least three traded protocols carry the category. Largest effects: ' + topEffects.map(function (e) { return e[0] + ' ' + (e[1] >= 0 ? '+' : '') + e[1].toFixed(2); }).join(', ') + '.' }),
-      el('p', { class: 'sub', text: 'Token odds blend two peer records, half and half: the share of protocols in the category that record a token, and the share in the protocol\'s age band, clamped to 2%..60%. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days.' }),
-      el('p', { class: 'sub', text: 'Held out, not asserted: every third traded protocol by slug (' + v.test_n + ') never trains the line. On those unseen tokens the median error is a factor of x' + v.median_factor.toFixed(2) + ' (the house starter rule, a fixed 0.25 multiple, scores x' + v.starter_median_factor.toFixed(2) + ' on the same set), and ' + v.coverage_n + ' of ' + v.test_n + ' market caps land inside the P10-P90 band from the training residuals. The band is wide because launch values vary enormously even among traded peers; it is shown on every row.' }),
+      el('p', { class: 'sub', text: 'The line is fit by least squares on ' + f.fitted_on + ' clean comps of ' + v.traded_n + ' traded protocols: a traded protocol is a clean comp when its market-cap/TVL ratio sits between 0.05 and 5; outside that range the ratio is an outlier, not a comparable. A market cap of 0 or -1 is a bad figure, not a price. The slope is below one: market cap grows more slowly than TVL, so a fixed multiple overstates the giants. Category effects are a category\'s mean residual, shrunk toward zero by n/(n+5), used only where at least three traded protocols carry the category. Largest effects: ' + topEffects.map(function (e) { return e[0] + ' ' + (e[1] >= 0 ? '+' : '') + e[1].toFixed(2); }).join(', ') + '.' }),
+      el('p', { class: 'sub', text: 'Token odds come from a logistic regression on log TVL, age, 7-day growth, chain count and category, fitted on all ' + DATA.accounted.total + ' protocols. Its 5-fold cross-validated log-loss is ' + o.log_loss_cv.toFixed(3) + ', against ' + o.log_loss_blend_cv.toFixed(3) + ' for the old half-and-half blend of category and age-band rates and ' + o.log_loss_base_cv.toFixed(3) + ' for the base rate. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days.' }),
+      el('p', { class: 'sub', text: 'Held out, not asserted: 5-fold cross-validation on the ' + v.clean_n + ' clean comps, each protocol held out once in turn. The median error is a factor of x' + v.median_factor.toFixed(2) + ' (the house starter rule, a fixed 0.25 multiple, scores x' + v.starter_median_factor.toFixed(2) + ' the same way). A single split is noisy: two deterministic splits by slug score x' + v.split1_median_factor.toFixed(2) + ' and x' + v.split2_median_factor.toFixed(2) + ' on the same data, leave-one-out scores x' + v.loo_median_factor.toFixed(2) + ', and the same split on the full ' + v.traded_n + ' traded protocols without the clean-comps screen scores x' + v.full_median_factor.toFixed(2) + '. The P10-P90 band comes from one deterministic split (every third by slug): ' + v.coverage_n + ' of ' + v.test_n + ' held-out market caps land inside it (' + Math.round(v.coverage * 100) + '%). The band is wide because launch values vary enormously even among traded peers; it is shown on every row.' }),
       el('p', { class: 'sub', text: 'Farm verdicts compare value to cost inside this board: expected value per $1,000 of farm cost, top third FARM, middle third THIN, bottom third SKIP. The farm cost is the deposit plus gas to open plus $2 of gas a week over the hold.' })
     );
   }
@@ -441,7 +439,7 @@
     var mfOut = el('output', { text: String(state.maturityFloor) });
     mf.addEventListener('input', function () { state.maturityFloor = parseFloat(mf.value); state.sandbox = true; mfOut.textContent = mf.value; render(); });
     var reset = el('button', { class: 'button', type: 'button', text: 'Reset to fitted weights', onclick: function () { state.growthWeight = m.growth_weight; state.maturityFloor = m.maturity_floor; state.sandbox = false; render(); } });
-    return el('section', { class: 'panel tool' },
+    return el('section', { class: 'panel tool', id: 'sandbox' },
       el('h2', { text: 'Model sandbox' }),
       el('p', { class: 'sub', text: 'Move the weights and the board re-ranks in place from the same snapshot figures. The sandbox only changes this page: the submitted board uses the fitted weights (growth ' + m.growth_weight + ', maturity floor ' + m.maturity_floor + ').' }),
       el('div', { class: 'row' },
@@ -501,11 +499,6 @@
     dialog.textContent = '';
     var recomputed = rawImpliedOf(row, DATA.model.growth_weight, DATA.model.maturity_floor);
     var recomputedRaw = Math.max(1, Math.round(recomputed.raw));
-    var catCount = DATA.fit.category_counts[row.category || '(null)'];
-    var band = ageBand(row.age_days);
-    var ageCount = DATA.fit.age_counts[band];
-    var catOdds = DATA.fit.category_odds[row.category || '(null)'];
-    var ageOdds = DATA.fit.age_odds[band];
     // Waterfall: the chain from the fitted base to the expected value. Each bar's width is
     // a log scale over the step range (12% floor plus 88% of the log span), so the odds step
     // is visibly shorter than the raw step while even a small-odds row keeps a visible bar.
@@ -541,12 +534,22 @@
       ),
       el('div', { class: 'wf-band' }, 'P10-P90 band ', el('b', { text: fmtUsd(row.p10_usd) + ' - ' + fmtUsd(row.p90_usd) })),
       el('p', { class: 'sub', text: 'Raw implied value ' + fmtUsd(row.raw_implied_value_usd) + ' is the base after growth and maturity; expected value is raw times token odds.' }),
-      el('p', { class: 'sub', text: 'Token odds: ' + (catOdds !== undefined ? 'category ' + fmtOdds(catOdds) + (catCount ? ' (' + catCount.t + ' of ' + catCount.n + ' peers record a token)' : '') : 'category fallback ' + fmtOdds(DATA.fit.overall_odds)) + ', age band ' + band + ' ' + fmtOdds(ageOdds) + (ageCount ? ' (' + ageCount.t + ' of ' + ageCount.n + ' peers record a token)' : '') + ', blended half and half.' }),
+      el('p', { class: 'sub', text: 'Token odds ' + fmtOdds(row.token_odds) + ' come from a logistic regression on log TVL, age, 7-day growth, chain count and category, fitted on all ' + DATA.accounted.total + ' protocols (5-fold CV log-loss ' + DATA.fit.odds_model.log_loss_cv.toFixed(3) + ', against ' + DATA.fit.odds_model.log_loss_blend_cv.toFixed(3) + ' for the old half-and-half blend and ' + DATA.fit.odds_model.log_loss_base_cv.toFixed(3) + ' for the base rate). Age is the time since first listing; an unlisted age uses ' + DATA.model.unknown_age_days + ' days.' }),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the page recomputes this row as ' + fmtUsd(recomputedRaw) + (recomputedRaw === row.raw_implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' The band is wide because launch values vary enormously even among traded peers. This is an estimate, not a price.' })
     ));
+    // Net farm economics: expected value minus what farming costs, and the raw implied value
+    // at which the expected value just covers that cost (farm cost divided by token odds).
+    var netValue = row.implied_value_usd - row.farm_cost_usd;
+    var breakEven = row.token_odds > 0 ? row.farm_cost_usd / row.token_odds : null;
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
       el('p', { class: 'sub', text: 'Verdict ' + row.verdict + ': $' + row.farm_cost_usd + ' to farm (deposit plus gas), $' + Math.round(row.value_per_1000_cost).toLocaleString('en-US') + ' of expected value per $1,000 of cost.' }),
+      el('div', { class: 'net' },
+        el('div', null, el('span', { text: 'Expected value' }), el('b', { text: fmtUsd(row.implied_value_usd) })),
+        el('div', null, el('span', { text: 'Farm cost' }), el('b', { text: '$' + row.farm_cost_usd })),
+        el('div', { class: netValue >= 0 ? 'net-pos' : 'net-neg' }, el('span', { text: 'Net value' }), el('b', { text: (netValue < 0 ? '-' : '') + fmtUsd(Math.abs(netValue)) }))
+      ),
+      el('p', { class: 'sub', text: 'Break-even: farming pays off if the token launches above ' + fmtUsd(breakEven) + ' of raw implied value — at that launch value the expected value just covers the $' + row.farm_cost_usd + ' farm cost.' }),
       el('ol', { class: 'steps' }, row.farm_steps.map(function (s) {
         var at = s.indexOf(' Cost: ');
         var action = at >= 0 ? s.slice(0, at) : s;
@@ -567,6 +570,7 @@
     shell.appendChild(header());
     shell.appendChild(lede());
     shell.appendChild(headline());
+    shell.appendChild(accountedStrip());
     shell.appendChild(scatter());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
@@ -580,8 +584,16 @@
     app.setAttribute('aria-busy', 'false');
     if (!dialog.isConnected) app.appendChild(dialog);
     if (state.selected) openDetail(state.selected);
+    // #sandbox=1 opens the page at the sandbox (once, on load): the screenshot of the
+    // sandbox view lands on the panel instead of the top of the board.
+    if (state.sandboxOpen && !scrolledToSandbox) {
+      scrolledToSandbox = true;
+      var sb = document.getElementById('sandbox');
+      if (sb) sb.scrollIntoView();
+    }
   }
 
+  var scrolledToSandbox = false;
   readHash();
   render();
   window.addEventListener('keydown', function (e) {
