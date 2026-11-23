@@ -28,6 +28,7 @@
   function odds(n) { return (n === null || n === undefined || !isFinite(n)) ? 'n/a' : Math.round(n * 100) + '%'; }
   function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
   function p1(n) { return (n * 100).toFixed(1) + '%'; }
+  function bw(d) { return Math.abs(d).toFixed(1) + '% ' + (d >= 0 ? 'better' : 'worse'); }
   function title(s) { return s.split('-').map(function (w) { return w ? w[0].toUpperCase() + w.slice(1) : w; }).join(' '); }
   function nm(r) { return r[2] || title(r[1]); }
   function cat(r) { return D.cats[r[3]] || '(null)'; }
@@ -124,7 +125,7 @@
   }
   function scatterHtml() {
     return '<section class="panel" aria-label="Scatter"><h2>Market cap on TVL</h2>' +
-      '<p class="fine">Grey: the ' + D.comps.length + ' clean comps that trade. Blue: the board. Line: the size curve, log(mcap) = ' + F.intercept.toFixed(2) + ' + ' + F.slope.toFixed(3) + ' x log(TVL). The slope is below one, so a fixed multiple overstates the giants.</p>' +
+      '<p class="fine">Grey: the ' + D.comps.length + ' clean comps that trade. Blue: the board. Line: the fitted size curve, log(mcap) = ' + F.intercept.toFixed(2) + ' + ' + F.slope.toFixed(3) + ' x log(TVL). The slope is below one, so a fixed multiple overstates the giants.</p>' +
       '<canvas id="sc" width="640" height="360"></canvas>' +
       '<p class="fine">The scatter follows the sandbox: move a slider and the blue points move with it.</p></section>';
   }
@@ -194,7 +195,8 @@
       h += '<tr' + (r[6] === 'pruned' ? ' class="pruned"' : '') + ' title="' + esc(r[7]) + '"><td>' + esc(r[0]) + '</td><td class="num">' + p1(r[1]) + '</td><td class="num">' + delta + '</td><td class="num">' + ci + '</td><td class="num">x' + r[5].toFixed(2) + '</td><td><span class="badge ' + r[6] + '">' + r[6] + '</span></td></tr>';
     });
     h += '</tbody></table><p class="fine">Stepwise: ' + A.stepwise.map(function (s) { return s[0] + ' ' + p1(s[1]); }).join(' → ') +
-      '. Odds (C4) on its own task: log-loss ' + A.odds[0].toFixed(3) + ' vs base rate ' + A.odds[2].toFixed(3) + ' (' + A.odds[3].toFixed(1) + '% better) and blend ' + A.odds[1].toFixed(3) + ' (' + A.odds[4].toFixed(1) + '% better). 10-fold CV median err x' + F.ten_fold_median_factor.toFixed(2) + '; odds Brier ' + F.odds_brier_cv.toFixed(3) + ' vs base ' + F.odds_brier_base_cv.toFixed(3) + '. Per-category slope held out ' + A.per_category_ratio.toFixed(2) + 'x worse than the single slope. Young cohort (n=' + A.young[0] + ') median err x' + A.young[1].toFixed(2) + ' vs rest x' + A.young[2].toFixed(2) + ' (' + A.young[3].toFixed(2) + 'x).</p>' +
+      '. Odds (C4) on its own task: log-loss ' + A.odds[0].toFixed(3) + ' vs base rate ' + A.odds[2].toFixed(3) + ' (' + bw(A.odds[3]) + ') and blend ' + A.odds[1].toFixed(3) + ' (' + bw(A.odds[4]) + '). 10-fold CV median err x' + F.ten_fold_median_factor.toFixed(2) + '; odds Brier ' + F.odds_brier_cv.toFixed(3) + ' vs base ' + F.odds_brier_base_cv.toFixed(3) + '. Per-category slope held out ' + A.per_category_ratio.toFixed(2) + 'x worse than the single slope. Young cohort (n=' + A.young[0] + ') median err x' + A.young[1].toFixed(2) + ' vs rest x' + A.young[2].toFixed(2) + ' (' + A.young[3].toFixed(2) + 'x). ' +
+      'The odds are a launch model, not a prevalence table: categories with fewer than 40 protocols get no one-hot term — 39 protocols cannot support one — so a small young category\'s low token rate does not read as a protocol\'s own odds.</p>' +
       '<p class="fine">Warning: the median-error column rewards a constant. A model predicting the training median for every protocol scores x' + A.rows[1][5].toFixed(2) + ' on it yet ranks at random (pairwise ' + p1(A.rows[1][1]) + '). Judge a component on the pairwise column first.</p></section>';
     return h;
   }
