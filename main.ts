@@ -109,6 +109,11 @@ const abRow = (name: string): string => {
   const r = ab.rows.find((x) => x.model === name);
   return r === undefined ? 'n/a' : `pairwise ${(r.pairwise * 100).toFixed(1)}% (ΔLOCO ${r.delta_pairwise === null ? '—' : `${r.delta_pairwise >= 0 ? '+' : ''}${r.delta_pairwise.toFixed(1)} pts`})`;
 };
+const terms = radar.terms;
+const termLines = terms.terms
+  .map((t) => `  ${t.term}: ${t.verdict} (LOO Δ ${(t.loo_delta_pts >= 0 ? '+' : '') + t.loo_delta_pts.toFixed(1)} pts, WF Δ ${(t.wf_delta_pts >= 0 ? '+' : '') + t.wf_delta_pts.toFixed(1)} pts, n=${t.wf_n})`)
+  .join('\n');
+const rg = terms.range;
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
     `token radar: fit log(mcap) = ${radar.fit.intercept.toFixed(3)} + ${radar.fit.slope.toFixed(3)} x log(TVL) on ${radar.fit.fitted_on} traded protocols; ` +
@@ -116,6 +121,8 @@ process.stdout.write(
     `P10-P90 covers ${radar.fit.validation.coverage_n}/${radar.fit.validation.test_n} held-out market caps\n` +
     `token radar: ablation (5-fold CV, n=${ab.cv_n}): Full ${abRow('Full (C1+C2+C3)')}; Without C1 ${abRow('Without C1 (scale)')}; Without C2 ${abRow('Without C2 (growth)')}; Without C3 ${abRow('Without C3 (maturity)')}; Baseline ${abRow('Baseline (starter)')}\n` +
     `token radar: odds log-loss ${ab.odds.logistic_log_loss.toFixed(3)} (blend ${ab.odds.blend_log_loss.toFixed(3)}, base ${ab.odds.base_log_loss.toFixed(3)}); per-category slope ${ab.per_category_ratio.toFixed(2)}x the single slope held out; young cohort x${ab.young.median_factor.toFixed(2)} vs rest x${ab.young.rest_median_factor.toFixed(2)}\n` +
+    `token radar: per-term validation (LOO n=${terms.loo_n}, walk-forward n=${terms.wf_n}):\n${termLines}\n` +
+    `token radar: range honesty: P10-P90 covers ${(rg.loo_p10_p90 * 100).toFixed(1)}% leave-one-out and ${(rg.wf_p10_p90 * 100).toFixed(1)}% walk-forward; P25-P75 covers ${(rg.loo_p25_p75 * 100).toFixed(1)}% and ${(rg.wf_p25_p75 * 100).toFixed(1)}%\n` +
     `token radar: top 5: ${board.slice(0, 5).map((r) => `${r.slug} $${r.implied_value_usd.toLocaleString('en-US')}`).join(', ')}\n` +
     `token radar: build ${buildHash}; wrote ${join(out, 'board.json')}, ${join(out, 'dashboard')} (4 files incl. data.js), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
