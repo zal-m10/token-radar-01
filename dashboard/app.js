@@ -13,6 +13,7 @@
   var app = document.getElementById('board');
   var M = D.model, F = D.fit, T = D.terms;
   var S = { q: '', cat: 'all', ch: 'all', v: 'all', tab: 'pre-token', sort: 'ev', dir: -1, sel: null };
+  var jump = null;
   var SB = { gw: 0, os: 1, ds: 0.10 };
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   function usd(n) {
@@ -98,7 +99,7 @@
     var A = D.ablation, acc = D.accounted;
     var items = [
       ['Snapshot', D.as_of], ['Coverage', D.board_size + ' scored / ' + acc.total + ' total'],
-      ['Accounted', acc.total + '/' + acc.total], ['Model', 'radar-5 · slope ' + F.slope.toFixed(3)],
+      ['Accounted', acc.total + '/' + acc.total], ['Model', D.model_version + ' · slope ' + F.slope.toFixed(3)],
       ['Terms kept', T.terms.filter(function (t) { return t[14] === 'kept'; }).length + ' of ' + T.terms.length],
       ['Held-out', 'pairwise ' + p1(A.rows[0][1]) + ' · err x' + F.median_factor.toFixed(2)],
       ['Per-category slope', A.per_category_ratio.toFixed(2) + 'x worse'], ['Build', D.build_hash], ['Determinism', 'PASS']
@@ -118,12 +119,12 @@
       '<ul class="ledger">' + gs.map(function (g) {
         return '<li><span class="sw" style="background:' + KIND[g.kind] + '"></span><span>' + esc(g.label) + '</span><b>' + g.n + '</b></li>';
       }).join('') + '</ul>' +
-      '<p class="fine">The board is the watchlist (the floor, never a ceiling) plus the early rows below it. The rest are set aside by a stated rule, or they already record a token and are shown at the market\'s own value.</p></section>';
+      '<p class="fine">The board is the watchlist (the floor, never a ceiling) plus the early rows below it and the stand-alone protocols above the floor. The rest are set aside by a stated rule, or they already record a token and are shown at the market\'s own value.</p></section>';
     return h;
   }
   function scatterHtml() {
     return '<section class="panel" aria-label="Scatter"><h2>Market cap on TVL</h2>' +
-      '<p class="fine">Grey: the ' + D.comps.length + ' clean comps that trade. Blue: the board. Line: the fitted size curve, log(mcap) = ' + F.intercept.toFixed(2) + ' + ' + F.slope.toFixed(3) + ' x log(TVL). The slope is below one, so a fixed multiple overstates the giants.</p>' +
+      '<p class="fine">Grey: the ' + D.comps.length + ' clean comps that trade. Blue: the board. Line: the size curve, log(mcap) = ' + F.intercept.toFixed(2) + ' + ' + F.slope.toFixed(3) + ' x log(TVL). The slope is below one, so a fixed multiple overstates the giants.</p>' +
       '<canvas id="sc" width="640" height="360"></canvas>' +
       '<p class="fine">The scatter follows the sandbox: move a slider and the blue points move with it.</p></section>';
   }
@@ -193,7 +194,7 @@
       h += '<tr' + (r[6] === 'pruned' ? ' class="pruned"' : '') + ' title="' + esc(r[7]) + '"><td>' + esc(r[0]) + '</td><td class="num">' + p1(r[1]) + '</td><td class="num">' + delta + '</td><td class="num">' + ci + '</td><td class="num">x' + r[5].toFixed(2) + '</td><td><span class="badge ' + r[6] + '">' + r[6] + '</span></td></tr>';
     });
     h += '</tbody></table><p class="fine">Stepwise: ' + A.stepwise.map(function (s) { return s[0] + ' ' + p1(s[1]); }).join(' → ') +
-      '. Odds (C4) on its own task: log-loss ' + A.odds[0].toFixed(3) + ' vs base rate ' + A.odds[2].toFixed(3) + ' (' + A.odds[3].toFixed(1) + '% better) and blend ' + A.odds[1].toFixed(3) + ' (' + A.odds[4].toFixed(1) + '% better). Per-category slope held out ' + A.per_category_ratio.toFixed(2) + 'x worse than the single slope. Young cohort (n=' + A.young[0] + ') median err x' + A.young[1].toFixed(2) + ' vs rest x' + A.young[2].toFixed(2) + ' (' + A.young[3].toFixed(2) + 'x).</p>' +
+      '. Odds (C4) on its own task: log-loss ' + A.odds[0].toFixed(3) + ' vs base rate ' + A.odds[2].toFixed(3) + ' (' + A.odds[3].toFixed(1) + '% better) and blend ' + A.odds[1].toFixed(3) + ' (' + A.odds[4].toFixed(1) + '% better). 10-fold CV median err x' + F.ten_fold_median_factor.toFixed(2) + '; odds Brier ' + F.odds_brier_cv.toFixed(3) + ' vs base ' + F.odds_brier_base_cv.toFixed(3) + '. Per-category slope held out ' + A.per_category_ratio.toFixed(2) + 'x worse than the single slope. Young cohort (n=' + A.young[0] + ') median err x' + A.young[1].toFixed(2) + ' vs rest x' + A.young[2].toFixed(2) + ' (' + A.young[3].toFixed(2) + 'x).</p>' +
       '<p class="fine">Warning: the median-error column rewards a constant. A model predicting the training median for every protocol scores x' + A.rows[1][5].toFixed(2) + ' on it yet ranks at random (pairwise ' + p1(A.rows[1][1]) + '). Judge a component on the pairwise column first.</p></section>';
     return h;
   }
@@ -238,6 +239,8 @@
   function key(r) {
     if (S.sort === 'ev') return dispEV(r);
     if (S.sort === 'tvl') return tvl(r);
+    if (S.sort === 'size') return recompute(r).raw / tvl(r);
+    if (S.sort === 'oddsx') return recompute(r).od;
     if (S.sort === 'growth') return r[7] === null ? -999 : r[7];
     if (S.sort === 'age') return r[8] === null ? 99999 : r[8];
     if (S.sort === 'odds') return r[10];
@@ -277,17 +280,17 @@
       '<button data-export="csv">CSV</button></div>';
     var rows = filtered().slice().sort(function (a, b) { var ka = key(a), kb = key(b); return (ka < kb ? -1 : ka > kb ? 1 : a[0] - b[0]) * S.dir; });
     h += '<p class="count">Showing ' + rows.length + ' of ' + D.rows.length + ' protocols matching filter' + (sbOn() ? ' · sandbox values shown' : '') + '</p>';
-    var cols = [['rank', '#', 0], ['name', 'Protocol', 0], ['cat', 'Category', 0], ['ev', 'Expected value', 1], ['tvl', 'TVL', 1], ['growth', '7d', 1], ['age', 'Age', 1], ['odds', 'Token odds', 1], ['cost', 'Farm cost', 1], ['value', 'Value / $1k', 1], ['verdict', 'Verdict', 0]];
+    var cols = [['rank', '#', 0], ['name', 'Protocol', 0], ['cat', 'Category', 0], ['ev', 'Expected value', 1], ['tvl', 'TVL', 1], ['size', 'x size', 1], ['oddsx', 'x odds', 1], ['growth', '7d', 1], ['age', 'Age', 1], ['odds', 'Token odds', 1], ['cost', 'Farm cost', 1], ['value', 'Value / $1k', 1], ['verdict', 'Verdict', 0]];
     h += '<div class="boardwrap"><table><thead><tr>';
     cols.forEach(function (c) {
       var num = c[2] ? ' class="num' + (S.sort === c[0] ? ' sorted' + (S.dir === 1 ? ' asc' : '') : '') + '"' : (S.sort === c[0] ? ' class="sorted"' : '');
-      var inner = ['ev', 'tvl', 'growth', 'age', 'odds', 'cost', 'value'].indexOf(c[0]) >= 0 ? '<button data-sort="' + c[0] + '">' + c[1] + '</button>' : c[1];
+      var inner = ['ev', 'tvl', 'size', 'oddsx', 'growth', 'age', 'odds', 'cost', 'value'].indexOf(c[0]) >= 0 ? '<button data-sort="' + c[0] + '">' + c[1] + '</button>' : c[1];
       h += '<th' + num + '>' + inner + '</th>';
     });
     h += '</tr></thead><tbody>';
     rows.forEach(function (r) {
-      var c = farmCost(r);
-      h += '<tr data-slug="' + esc(r[1]) + '"><td class="num">' + r[0] + '</td><td>' + esc(nm(r)) + '</td><td>' + esc(cat(r)) + '</td><td class="num">' + usd(dispEV(r)) + '</td><td class="num">' + usd(tvl(r)) + '</td><td class="num">' + pct(r[7]) + '</td><td class="num">' + age(r[8]) + '</td><td class="num">' + odds(r[10]) + '</td><td class="num">$' + c.total + '</td><td class="num">' + usd(dispEV(r) / (c.total / 1000)) + '</td><td><span class="badge ' + r[11].toLowerCase() + '">' + r[11] + '</span></td></tr>';
+      var c = farmCost(r), rc = recompute(r);
+      h += '<tr data-slug="' + esc(r[1]) + '"><td class="num">' + r[0] + '</td><td>' + esc(nm(r)) + '</td><td>' + esc(cat(r)) + '</td><td class="num">' + usd(dispEV(r)) + '</td><td class="num">' + usd(tvl(r)) + '</td><td class="num">x' + (rc.raw / tvl(r)).toFixed(4) + '</td><td class="num">x' + rc.od.toFixed(3) + '</td><td class="num">' + pct(r[7]) + '</td><td class="num">' + age(r[8]) + '</td><td class="num">' + odds(r[10]) + '</td><td class="num">$' + c.total + '</td><td class="num">' + usd(dispEV(r) / (c.total / 1000)) + '</td><td><span class="badge ' + r[11].toLowerCase() + '">' + r[11] + '</span></td></tr>';
     });
     return h + '</tbody></table></div>';
   }
@@ -314,6 +317,7 @@
   function readHash() {
     var hash = window.location.hash.replace(/^#/, '');
     if (!hash) return;
+    if (hash === 'method') { jump = 'method'; return; }
     var p = new URLSearchParams(hash);
     if (p.get('q')) S.q = p.get('q');
     if (p.get('p')) S.sel = p.get('p');
@@ -321,6 +325,7 @@
     if (p.get('chain')) S.ch = p.get('chain');
     if (p.get('verdict')) S.v = p.get('verdict');
     if (p.get('tab')) S.tab = p.get('tab');
+    if (p.get('q') || p.get('category') || p.get('chain') || p.get('verdict')) jump = 'board';
   }
   function writeHash() {
     var p = new URLSearchParams();
@@ -343,10 +348,12 @@
       '<div class="panels">' + ablationHtml() + planHtml() + '</div>' +
       sandboxHtml() +
       '<h2>The board</h2>' + tableHtml() +
-      '<p class="accounted">Accounted: ' + acc.total + ' of ' + acc.total + ' protocols — ' + acc.board + ' on the board, ' + acc.live + ' live, ' + acc.traded_not_live + ' traded but not in the live view, ' + acc.pre_token_not_rankable + ' pre-token but not rankable, ' + acc.rankable_above_floor_not_watchlist + ' rankable above the floor and outside the watchlist. Snapshot ' + esc(D.as_of) + '; floor $' + D.floor_usd.toLocaleString('en-US') + '.</p>' +
+      '<p class="accounted">Accounted: ' + acc.total + ' of ' + acc.total + ' protocols — ' + acc.board + ' on the board (' + D.watchlist_size + ' watchlist, ' + D.early_size + ' early, ' + (D.board_size - D.watchlist_size - D.early_size) + ' off-list), ' + acc.live + ' live, ' + acc.traded_not_live + ' traded but not in the live view, ' + acc.pre_token_not_rankable + ' pre-token but not rankable, ' + acc.rankable_above_floor_set_aside + ' above the floor and set aside, ' + acc.rankable_below_floor_beyond_early + ' below the floor beyond the early rows. Snapshot ' + esc(D.as_of) + '; floor $' + D.floor_usd.toLocaleString('en-US') + '.</p>' +
       '<p class="note">How to read this board: the value follows from the snapshot\'s own figures (TVL, 7-day growth, age with no token), never from a hardcoded list of names. The per-term table above shows what each candidate term contributes on held-out data under two methods; the median-error column is calibration only. A protocol is described as recording no token, never as having none.</p>';
     writeHash();
     drawScatter();
+    if (jump === 'method') { var m = document.querySelector('[aria-label="Per-term evidence"]'); if (m) m.scrollIntoView(); jump = null; }
+    else if (jump === 'board') { var b = document.querySelector('.tabs'); if (b) b.scrollIntoView(); jump = null; }
   }
 
   dialog = document.createElement('dialog');

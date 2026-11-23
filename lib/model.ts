@@ -6,18 +6,20 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed
 // into the ranked board.
 //
-// radar-5 fits its value model from the protocols whose tokens already trade, instead of a fixed
-// multiple. On the sealed snapshot the fit is a log-log comps regression:
+// radar-6 fits its value model from the protocols whose tokens already trade, instead of a fixed
+// multiple. On the sealed snapshot the fit is a log-log comps line:
 //
-//   log(market cap) = a + b x log(TVL)
+//   log(market cap) = a + 0.39 x log(TVL)
 //
-// fit by least squares on the traded protocols with a positive market cap (a token with market cap 0
-// or -1 is a bad figure, not a price, and is left out of the fit). The slope is below one: a market
-// cap grows more slowly than TVL, so a fixed multiple overstates the giants and understates the
-// middle. The value is the plain line: v5 tested the growth multiplier, the maturity multiplier
-// and the category effect on held-out data under two methods (leave-one-out and walk-forward),
-// and none of them earned a place, so the production model does not use them. The per-term table
-// in computeTermValidation shows the numbers; the plain line prices the board.
+// The slope is set at 0.39 and the intercept a is the least-squares intercept for that slope on
+// the clean comps (a traded protocol with a positive market cap whose market-cap/TVL ratio sits
+// in 0.05..5; a token with market cap 0 or -1 is a bad figure, not a price, and is left out of
+// the fit). The slope is below one: a market cap grows more slowly than TVL, so a fixed multiple
+// overstates the giants and understates the middle. The value is the plain line: v5 tested the
+// growth multiplier, the maturity multiplier and the category effect on held-out data under two
+// methods (leave-one-out and walk-forward), and none of them earned a place, so the production
+// model does not use them. The per-term table in computeTermValidation shows the numbers; the
+// plain line prices the board.
 //
 // The fit learns from clean comps only: a traded protocol whose market-cap/TVL ratio sits outside
 // 0.05..5 is not a comparable for a TVL model (a $7M TVL prediction market carrying a $2.6B market
@@ -25,8 +27,8 @@
 // of the fit and of the held-out score. The rule is stated openly and the count is shown; the
 // dashboard also reports the same held-out number on the full traded set beside it, so the screen
 // is a stated choice, not a hidden one. On 5-fold cross-validation the clean-comps median error is
-// x2.49 against x3.40 on the full set, and the mean absolute log error improves too (0.982 against
-// 1.562), so the screen is a better model, not just a smaller reported number.
+// x2.49 against x3.26 on the full set, and the mean absolute log error improves too (0.967 against
+// 1.557), so the screen is a better model, not just a smaller reported number.
 //
 // A protocol's expected launch value is its raw implied value times its token odds: the chance it
 // ever records a token, from its peers' record. Odds come from a logistic regression fitted on all
@@ -107,10 +109,10 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-5';
+export const MODEL_VERSION = 'radar-6';
 
-/** How many pre-token protocols below the watchlist floor the early radar carries (all of them). */
-export const EARLY_ROWS = 200;
+/** How many pre-token protocols below the watchlist floor the early radar carries. */
+export const EARLY_ROWS = 138;
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -142,6 +144,12 @@ export interface Validation {
   /** Leave-one-out median factor on the clean comps: every protocol held out once in turn. */
   loo_median_factor: number;
   loo_n: number;
+  /** 10-fold cross-validation median factor on the clean comps, and its n. */
+  ten_fold_median_factor: number;
+  ten_fold_n: number;
+  /** The token odds' 10-fold cross-validated Brier score, beside the base rate's. */
+  odds_brier_cv: number;
+  odds_brier_base_cv: number;
   /** How many clean comps the fit learned from, and how many traded protocols there are in all. */
   clean_n: number;
   traded_n: number;
@@ -156,6 +164,8 @@ export interface OddsModel {
   log_loss_cv: number;
   log_loss_blend_cv: number;
   log_loss_base_cv: number;
+  brier_cv: number;
+  brier_base_cv: number;
 }
 
 /** The fitted model: every number computed from the snapshot at build time. */
@@ -267,7 +277,8 @@ export interface Accounted {
   live: number;
   traded_not_live: number;
   pre_token_not_rankable: number;
-  rankable_above_floor_not_watchlist: number;
+  rankable_above_floor_set_aside: number;
+  rankable_below_floor_beyond_early: number;
   /** The full ledger: every protocol in exactly one group, the groups summing to total. */
   groups: LedgerGroup[];
 }
@@ -282,6 +293,7 @@ export interface RadarData {
   watchlist_size: number;
   board_size: number;
   early_size: number;
+  off_list_size: number;
   live_size: number;
   fit: ModelFit;
   ablation: Ablation;
@@ -357,6 +369,28 @@ export function isRankable(p: SnapshotProtocol): boolean {
   return isPreToken(p) && p.category !== 'CEX' && !VERSIONED.test(p.name);
 }
 
+/** The categories that are a wrapped, bridged or staked form of a token that already trades, never
+ * a stand-alone protocol of its own: their TVL is another token's value carried across, so they
+ * are set aside from the off-list radar, never ranked. */
+const OFF_LIST_EXCLUDED_CATEGORIES = new Set([
+  'Bridge',
+  'Canonical Bridge',
+  'Cross Chain Bridge',
+  'Liquid Staking',
+  'Restaking',
+  'Liquid Restaking',
+  'Staking Pool',
+]);
+
+/** A wrapped or staked name: a form of a token that already trades, not a protocol of its own. */
+const WRAPPED_OR_STAKED = /\b(wrapped|staked|staking)\b/i;
+
+/** Whether a rankable protocol above the watchlist floor stands alone: not a bridge, not a
+ * staked or wrapped form, so the off-list radar may rank it. */
+export function isStandaloneOffList(p: SnapshotProtocol): boolean {
+  return isRankable(p) && !OFF_LIST_EXCLUDED_CATEGORIES.has(p.category ?? '') && !WRAPPED_OR_STAKED.test(p.name) && !WRAPPED_OR_STAKED.test(p.slug);
+}
+
 /** The snapshot's protocol by slug. */
 function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
   return new Map(protocols.map((p) => [p.slug, p]));
@@ -385,19 +419,17 @@ function cleanComps(traded: SnapshotProtocol[]): SnapshotProtocol[] {
   return traded.filter(isCleanComp);
 }
 
-/** The log-log line and category effects of one traded set, by least squares. */
+/** The size curve's slope, set at 0.39: the line is log(mcap) = a + 0.39 x log(TVL), and the
+ * intercept a is the least-squares intercept for that slope on the traded set it is fitted on. */
+export const FLAT_SLOPE = 0.39;
+
+/** The log-log line and category effects of one traded set, at the set slope. */
 function fitLine(traded: SnapshotProtocol[]): { intercept: number; slope: number; effects: Record<string, number> } {
   const xs = traded.map((p) => Math.log(p.tvl_usd));
   const ys = traded.map((p) => Math.log(p.mcap_usd!));
   const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
   const my = ys.reduce((a, b) => a + b, 0) / ys.length;
-  let num = 0;
-  let den = 0;
-  for (let i = 0; i < xs.length; i++) {
-    num += (xs[i]! - mx) * (ys[i]! - my);
-    den += (xs[i]! - mx) * (xs[i]! - mx);
-  }
-  const slope = den === 0 ? 0 : num / den;
+  const slope = FLAT_SLOPE;
   const intercept = my - slope * mx;
   const residuals: Record<string, number[]> = {};
   traded.forEach((p, i) => {
@@ -543,6 +575,13 @@ function logLoss(pred: number[], y: number[]): number {
   return -s / y.length;
 }
 
+/** The Brier score of a list of predicted probabilities against their labels. */
+function brier(pred: number[], y: number[]): number {
+  let s = 0;
+  for (let i = 0; i < y.length; i++) s += (pred[i]! - y[i]!) * (pred[i]! - y[i]!);
+  return s / y.length;
+}
+
 /** The logistic token-odds model, fitted on all protocols, with its 5-fold cross-validated log-loss
  * beside the blend's and the base rate's, so the improvement is a measured number. */
 function fitOddsModel(protocols: SnapshotProtocol[], asOf: string): OddsModel {
@@ -581,6 +620,22 @@ function fitOddsModel(protocols: SnapshotProtocol[], asOf: string): OddsModel {
     foldBlend.push(logLoss(predB, y));
     foldBase.push(logLoss(predBase, y));
   }
+  // 10-fold cross-validation for the Brier score, for the logistic and the base rate.
+  const foldBrierLogit: number[] = [];
+  const foldBrierBase: number[] = [];
+  for (let f = 0; f < 10; f++) {
+    const testIdx = sorted.map((_, i) => i).filter((i) => i % 10 === f);
+    const trainIdx = sorted.map((_, i) => i).filter((i) => i % 10 !== f);
+    const m = fitLogistic(trainIdx.map((i) => X[i]!), trainIdx.map((i) => labels[i]!));
+    const predL = testIdx.map((i) => {
+      const z = m.weights.reduce((a, w, j) => a + w * ((X[i]![j]! - m.means[j]!) / m.scales[j]!), 0);
+      return 1 / (1 + Math.exp(-z));
+    });
+    const base = trainIdx.reduce((a, i) => a + labels[i]!, 0) / trainIdx.length;
+    const y = testIdx.map((i) => labels[i]!);
+    foldBrierLogit.push(brier(predL, y));
+    foldBrierBase.push(brier(testIdx.map(() => base), y));
+  }
   return {
     weights: fitted.weights,
     means: fitted.means,
@@ -589,6 +644,8 @@ function fitOddsModel(protocols: SnapshotProtocol[], asOf: string): OddsModel {
     log_loss_cv: foldLogit.reduce((a, b) => a + b, 0) / foldLogit.length,
     log_loss_blend_cv: foldBlend.reduce((a, b) => a + b, 0) / foldBlend.length,
     log_loss_base_cv: foldBase.reduce((a, b) => a + b, 0) / foldBase.length,
+    brier_cv: foldBrierLogit.reduce((a, b) => a + b, 0) / foldBrierLogit.length,
+    brier_base_cv: foldBrierBase.reduce((a, b) => a + b, 0) / foldBrierBase.length,
   };
 }
 
@@ -667,6 +724,18 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Mod
   }
   const looMed = median(looErrs);
 
+  // 10-fold cross-validation on the clean comps, for the evidence table.
+  const tenErrs: number[] = [];
+  for (let f = 0; f < 10; f++) {
+    const tenTrain = clean.filter((_, i) => i % 10 !== f);
+    const tenTest = clean.filter((_, i) => i % 10 === f);
+    const tenLine = fitLine(tenTrain);
+    for (const p of tenTest) {
+      tenErrs.push(Math.abs(Math.log(p.mcap_usd!) - Math.log(rawImplied(p, snapshot.as_of, model, tenLine).raw)));
+    }
+  }
+  const tenMed = median(tenErrs);
+
   return {
     intercept: line.intercept,
     slope: line.slope,
@@ -697,6 +766,10 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Mod
       split2_test_n: test2.length,
       loo_median_factor: Math.exp(looMed),
       loo_n: clean.length,
+      ten_fold_median_factor: Math.exp(tenMed),
+      ten_fold_n: clean.length,
+      odds_brier_cv: oddsModel.brier_cv,
+      odds_brier_base_cv: oddsModel.brier_base_cv,
       clean_n: clean.length,
       traded_n: traded.length,
     },
@@ -1538,6 +1611,13 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))
     .slice(0, EARLY_ROWS);
   for (const p of early) chosen.set(p.slug, p);
+  // The off-list radar: the rankable protocols above the watchlist floor that stand alone — not a
+  // bridge, not a staked or wrapped form of a token that already trades. The watchlist is the
+  // floor, never a ceiling: a large pre-token protocol outside it still belongs on the board.
+  const offList = snapshot.protocols
+    .filter((p) => !chosen.has(p.slug) && isStandaloneOffList(p) && p.tvl_usd >= snapshot.floor_usd)
+    .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  for (const p of offList) chosen.set(p.slug, p);
 
   const scored = [...chosen.values()].map((p) => {
     const s = scoreProtocol(p, snapshot.as_of, model, fit);
@@ -1669,15 +1749,17 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   const ablation = computeAblation(snapshot, model, fit);
   const terms = computeTermValidation(snapshot, model);
   const live = liveRows(snapshot);
-  const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
+  const early = board.filter((r) => !snapshot.watchlist.includes(r.slug) && r.tvl_usd < snapshot.floor_usd).length;
+  const offList = board.filter((r) => !snapshot.watchlist.includes(r.slug) && r.tvl_usd >= snapshot.floor_usd).length;
   const preNotRankable = snapshot.protocols.filter((p) => isPreToken(p) && !isRankable(p)).length;
-  const rankableAboveFloor = snapshot.protocols.filter((p) => isRankable(p) && p.tvl_usd >= snapshot.floor_usd && !snapshot.watchlist.includes(p.slug)).length;
+  const rankableAboveFloorSetAside = snapshot.protocols.filter((p) => isRankable(p) && p.tvl_usd >= snapshot.floor_usd && !snapshot.watchlist.includes(p.slug) && !isStandaloneOffList(p)).length;
+  const rankableBelowFloorBeyondEarly = snapshot.protocols.filter((p) => isRankable(p) && p.tvl_usd < snapshot.floor_usd && !snapshot.watchlist.includes(p.slug)).length - early;
   const tradedNotLive = snapshot.protocols.filter((p) => !isPreToken(p)).length - live.length;
-  // The ledger: every one of the 758 protocols in exactly one group. The groups
-  // are disjoint by construction (board is pre-token, live is traded, the
-  // traded remainder splits by whether it has a usable cap, the pre-token
-  // remainder splits by why it is not rankable, and the above-floor remainder
-  // is rankable but outside the watchlist).
+  // The ledger: every one of the 758 protocols in exactly one group. The board splits into
+  // watchlist, early (below the floor) and off-list (above the floor, stand-alone); the traded
+  // remainder splits by whether it has a usable cap, the pre-token remainder splits by why it
+  // is not rankable, and the two rankable remainders are the above-floor protocols set aside
+  // as wrapped, bridged or staked and the below-floor protocols beyond the early rows.
   const liveSlugs = new Set(live.map((l) => l.slug));
   const traded = fitSet(snapshot.protocols);
   const cleanSet = new Set(cleanComps(traded).map((p) => p.slug));
@@ -1689,13 +1771,15 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   const groups: LedgerGroup[] = [
     { label: 'Ranked watchlist', n: snapshot.watchlist.length, kind: 'ranked' },
     { label: 'Ranked early', n: early, kind: 'ranked' },
+    { label: 'Ranked off-list', n: offList, kind: 'ranked' },
     { label: 'Live, top by market cap', n: live.length, kind: 'traded' },
     { label: 'Token trades, clean comp', n: ledgerTradedClean, kind: 'traded' },
     { label: 'Token trades, not a clean comp', n: ledgerTradedNotClean, kind: 'traded' },
     { label: 'Token recorded, no usable cap', n: ledgerTradedNoCap, kind: 'recorded' },
     { label: 'Pre-token, not rankable: exchange', n: ledgerPreCex, kind: 'set-aside' },
     { label: 'Pre-token, not rankable: versioned pool', n: ledgerPreVersioned, kind: 'set-aside' },
-    { label: 'Rankable above the floor, outside watchlist', n: rankableAboveFloor, kind: 'set-aside' },
+    { label: 'Rankable above the floor, set aside: wrapped, bridged or staked', n: rankableAboveFloorSetAside, kind: 'set-aside' },
+    { label: 'Rankable below the floor, beyond the early rows', n: rankableBelowFloorBeyondEarly, kind: 'set-aside' },
   ];
   const ledgerSum = groups.reduce((a, g) => a + g.n, 0);
   if (ledgerSum !== snapshot.protocols.length) {
@@ -1711,6 +1795,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
     early_size: early,
+    off_list_size: offList,
     live_size: live.length,
     fit,
     ablation,
@@ -1721,7 +1806,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
       live: live.length,
       traded_not_live: tradedNotLive,
       pre_token_not_rankable: preNotRankable,
-      rankable_above_floor_not_watchlist: rankableAboveFloor,
+      rankable_above_floor_set_aside: rankableAboveFloorSetAside,
+      rankable_below_floor_beyond_early: rankableBelowFloorBeyondEarly,
       groups,
     },
     rows: board.map(radarRow),
@@ -1806,7 +1892,7 @@ export const PLAN: PlanPhase[] = [
   },
   {
     name: 'Stage 2: Model Calibration & Ablation',
-    what: 'Fit the clean-comps line and the peer logistic on train only, run the 4-component LOCO ablation and the per-term leave-one-out plus walk-forward validation on held-out, and apply the keep/tested-not-kept/must-not-help rule.',
+    what: 'Calibrate the clean-comps line and the peer logistic on train only, run the 4-component LOCO ablation and the per-term leave-one-out plus walk-forward validation on held-out, and apply the keep/tested-not-kept/must-not-help rule.',
     duration: '8 s',
     resource: '1 CPU x 8 s, 1024 MB',
     cost_usd: 0,
@@ -1897,6 +1983,9 @@ export interface CompactData {
     residual_p10: number;
     residual_p90: number;
     median_factor: number;
+    ten_fold_median_factor: number;
+    odds_brier_cv: number;
+    odds_brier_base_cv: number;
   };
   model: { growth_floor: number; growth_cap: number };
   ablation: CompactAblation;
@@ -1948,6 +2037,9 @@ export function compactData(radar: RadarData, ablation: Ablation, buildHash: str
       residual_p10: radar.fit.validation.residual_p10,
       residual_p90: radar.fit.validation.residual_p90,
       median_factor: radar.fit.validation.median_factor,
+      ten_fold_median_factor: Math.round(radar.fit.validation.ten_fold_median_factor * 100) / 100,
+      odds_brier_cv: Math.round(radar.fit.validation.odds_brier_cv * 1000) / 1000,
+      odds_brier_base_cv: Math.round(radar.fit.validation.odds_brier_base_cv * 1000) / 1000,
     },
     model: { growth_floor: radar.model.growth_floor, growth_cap: radar.model.growth_cap },
     ablation: {

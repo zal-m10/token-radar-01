@@ -115,9 +115,11 @@ const termLines = terms.terms
   .join('\n');
 const rg = terms.range;
 process.stdout.write(
-  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.off_list_size} off-list, ${radar.live_size} live set aside)\n` +
     `token radar: fit log(mcap) = ${radar.fit.intercept.toFixed(3)} + ${radar.fit.slope.toFixed(3)} x log(TVL) on ${radar.fit.fitted_on} traded protocols; ` +
     `held-out median error x${radar.fit.validation.median_factor.toFixed(2)} (starter x${radar.fit.validation.starter_median_factor.toFixed(2)}), ` +
+    `10-fold x${radar.fit.validation.ten_fold_median_factor.toFixed(2)}, LOO x${radar.fit.validation.loo_median_factor.toFixed(2)}, ` +
+    `odds Brier ${radar.fit.validation.odds_brier_cv.toFixed(3)} (base ${radar.fit.validation.odds_brier_base_cv.toFixed(3)}), ` +
     `P10-P90 covers ${radar.fit.validation.coverage_n}/${radar.fit.validation.test_n} held-out market caps\n` +
     `token radar: ablation (5-fold CV, n=${ab.cv_n}): Full ${abRow('Full (C1+C2+C3)')}; Without C1 ${abRow('Without C1 (scale)')}; Without C2 ${abRow('Without C2 (growth)')}; Without C3 ${abRow('Without C3 (maturity)')}; Baseline ${abRow('Baseline (starter)')}\n` +
     `token radar: odds log-loss ${ab.odds.logistic_log_loss.toFixed(3)} (blend ${ab.odds.blend_log_loss.toFixed(3)}, base ${ab.odds.base_log_loss.toFixed(3)}); per-category slope ${ab.per_category_ratio.toFixed(2)}x the single slope held out; young cohort x${ab.young.median_factor.toFixed(2)} vs rest x${ab.young.rest_median_factor.toFixed(2)}\n` +
