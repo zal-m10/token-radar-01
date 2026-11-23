@@ -82,8 +82,26 @@ dialog::backdrop { background: rgba(26, 26, 24, .45); }
 .steps li { margin: 0 0 8px; font-size: 13.5px; }
 .accounted { font-size: 13px; color: var(--muted); margin: 16px 0 0; }
 .note { font-size: 12.5px; color: var(--muted); }
+/* Ledger: the segmented bar and its legend. */
+.ledgerbar { display: flex; height: 18px; border-radius: 9px; overflow: hidden; margin: 4px 0 10px; }
+.ledgerbar span { display: block; height: 100%; }
+.ledger { list-style: none; margin: 0 0 8px; padding: 0; columns: 2; column-gap: 24px; }
+.ledger li { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; font-size: 13px; break-inside: avoid; }
+.ledger .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.ledger b { margin-left: auto; font-family: var(--num); font-size: 12.5px; }
+/* Scatter canvas. */
+#sc { width: 100%; height: auto; display: block; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); }
+/* Sandbox sliders. */
+.slider { display: block; margin: 0 0 12px; }
+.slider span { display: block; font-size: 13.5px; }
+.slider input[type="range"] { width: 100%; accent-color: var(--accent); }
+.slider .fine { font-size: 12.5px; color: var(--muted); }
+section .fine .muted, .muted { color: var(--muted); }
+.filters button { padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); cursor: pointer; }
+.filters button:hover { background: #f4f1ea; }
 @media (max-width: 860px) {
   .panels { grid-template-columns: 1fr; }
   .kv { grid-template-columns: 1fr; }
   h1 { font-size: 24px; }
+  .ledger { columns: 1; }
 }
