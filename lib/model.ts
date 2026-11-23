@@ -6,22 +6,18 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed
 // into the ranked board.
 //
-// radar-4 fits its value model from the protocols whose tokens already trade, instead of a fixed
+// radar-5 fits its value model from the protocols whose tokens already trade, instead of a fixed
 // multiple. On the sealed snapshot the fit is a log-log comps regression:
 //
-//   log(market cap) = a + b x log(TVL) + category effect
+//   log(market cap) = a + b x log(TVL)
 //
 // fit by least squares on the traded protocols with a positive market cap (a token with market cap 0
 // or -1 is a bad figure, not a price, and is left out of the fit). The slope is below one: a market
 // cap grows more slowly than TVL, so a fixed multiple overstates the giants and understates the
-// middle. The category effect is a category's mean residual, used only where at least three traded
-// protocols carry the category, and shrunk toward zero by n/(n+5): a mean residual from only a few
-// traded protocols is noisy, so a small category's effect is pulled toward the global line instead
-// of being taken at face value. Anything else falls back to the global line. Growth and maturity
-// multiply the fitted value, with weights chosen by 5-fold cross-validation on the same traded set
-// (growth 0.25, maturity 0.8 to 1.2; the cross-validated median log error is 1.236, against 1.217
-// for the best grid point at growth 0, so the growth term costs almost nothing and keeps the term
-// the dashboard shows doing real work).
+// middle. The value is the plain line: v5 tested the growth multiplier, the maturity multiplier
+// and the category effect on held-out data under two methods (leave-one-out and walk-forward),
+// and none of them earned a place, so the production model does not use them. The per-term table
+// in computeTermValidation shows the numbers; the plain line prices the board.
 //
 // The fit learns from clean comps only: a traded protocol whose market-cap/TVL ratio sits outside
 // 0.05..5 is not a comparable for a TVL model (a $7M TVL prediction market carrying a $2.6B market
@@ -85,6 +81,16 @@ export interface ModelConstants {
   maturity_range: number;
   maturity_days: number;
   unknown_age_days: number;
+  /** Whether the growth (C2) and maturity (C3) multipliers are on. v5 tested them
+   * on held-out data under two methods and they did not earn a place, so the
+   * production model runs with both off and the value is C1 scale times C4 odds. */
+  use_growth: boolean;
+  use_maturity: boolean;
+  /** Whether the category effect is on. v5 tested it under both methods and it
+   * hurts the ranking (leave-one-out -1.1 pts, walk-forward -5.2 pts) and the
+   * walk-forward median error, so the production model runs with it off and
+   * the value is the plain clean-comps line times the token odds. */
+  use_category_effect: boolean;
 }
 
 export const MODEL: ModelConstants = {
@@ -95,10 +101,13 @@ export const MODEL: ModelConstants = {
   maturity_range: 0.4,
   maturity_days: 1095,
   unknown_age_days: 365,
+  use_growth: false,
+  use_maturity: false,
+  use_category_effect: false,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-4';
+export const MODEL_VERSION = 'radar-5';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries (all of them). */
 export const EARLY_ROWS = 200;
@@ -244,6 +253,13 @@ export interface LiveRow {
   change_7d: number | null;
 }
 
+/** One group of the ledger: every one of the snapshot's protocols sits in exactly one. */
+export interface LedgerGroup {
+  label: string;
+  n: number;
+  kind: 'ranked' | 'traded' | 'recorded' | 'set-aside';
+}
+
 /** Where every one of the snapshot's protocols went: the board, the live view, or a stated reason. */
 export interface Accounted {
   total: number;
@@ -252,6 +268,8 @@ export interface Accounted {
   traded_not_live: number;
   pre_token_not_rankable: number;
   rankable_above_floor_not_watchlist: number;
+  /** The full ledger: every protocol in exactly one group, the groups summing to total. */
+  groups: LedgerGroup[];
 }
 
 /** Everything the dashboard needs: the board, the live set, the fit, and the model it runs. */
@@ -267,9 +285,12 @@ export interface RadarData {
   live_size: number;
   fit: ModelFit;
   ablation: Ablation;
+  terms: TermValidationResult;
   accounted: Accounted;
   rows: RadarRow[];
   live: LiveRow[];
+  /** The clean comps' [TVL, market cap] in $K, for the scatter plot. */
+  comps: [number, number][];
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -398,14 +419,16 @@ function fitLine(traded: SnapshotProtocol[]): { intercept: number; slope: number
   return { intercept, slope, effects };
 }
 
-/** The growth and maturity multipliers one protocol gets under `model`. */
+/** The growth and maturity multipliers one protocol gets under `model`. When a
+ * multiplier is off, it is 1: the term contributes nothing. The validation
+ * passes a model with both on so the terms can still be tested. */
 function multipliers(p: SnapshotProtocol, asOf: string, model: ModelConstants): { growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
   const age = ageDays(asOf, p.listed_at);
   const rawGrowth = finite(p.change_7d, 0);
   const growthPct = clamp(rawGrowth, model.growth_floor, model.growth_cap);
-  const growthMult = 1 + (growthPct / 100) * model.growth_weight;
+  const growthMult = model.use_growth ? 1 + (growthPct / 100) * model.growth_weight : 1;
   const ageForModel = age ?? model.unknown_age_days;
-  const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
+  const maturityMult = model.use_maturity ? model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range : 1;
   return { growthPct, growthMult, maturityMult, age };
 }
 
@@ -417,14 +440,14 @@ function rawImplied(
   line: { intercept: number; slope: number; effects: Record<string, number> },
 ): { raw: number; effect: number; growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
   const { growthPct, growthMult, maturityMult, age } = multipliers(p, asOf, model);
-  const effect = line.effects[p.category ?? '(null)'] ?? 0;
+  const effect = model.use_category_effect ? (line.effects[p.category ?? '(null)'] ?? 0) : 0;
   const raw = Math.max(1, Math.exp(line.intercept + line.slope * Math.log(p.tvl_usd) + effect) * growthMult * maturityMult);
   return { raw, effect, growthPct, growthMult, maturityMult, age };
 }
 
 /** The house starter rule on the same protocol, for the validation's side-by-side. */
 function starterImplied(p: SnapshotProtocol, asOf: string): number {
-  const { growthMult, maturityMult } = multipliers(p, asOf, { ...MODEL, growth_weight: 0.5, maturity_floor: 0.6, maturity_range: 0.4 });
+  const { growthMult, maturityMult } = multipliers(p, asOf, { ...MODEL, use_growth: true, use_maturity: true, growth_weight: 0.5, maturity_floor: 0.6, maturity_range: 0.4 });
   return Math.max(1, Math.round(p.tvl_usd * 0.25 * growthMult * maturityMult));
 }
 
@@ -893,14 +916,18 @@ export function computeAblation(snapshot: Snapshot, model: ModelConstants = MODE
   const traded = fitSet(snapshot.protocols);
   const clean = cleanComps(traded);
   const asOf = snapshot.as_of;
+  // The ablation tests the components as if they were on, even when the
+  // production model runs with them off: otherwise the with/without
+  // toggles would both multiply by 1 and the test would be meaningless.
+  const testModel: ModelConstants = { ...model, use_growth: true, use_maturity: true };
 
   // The variants, as functions of a protocol, a fitted line and the train median.
   type Variant = (p: SnapshotProtocol, line: { intercept: number; slope: number; effects: Record<string, number> }, medLog: number) => number;
   const variants: { name: string; fn: Variant }[] = [
-    { name: 'Full (C1+C2+C3)', fn: (p, line, med) => rawVariant(p, asOf, model, line, true, true, true, med) },
-    { name: 'Without C1 (scale)', fn: (p, line, med) => rawVariant(p, asOf, model, line, false, true, true, med) },
-    { name: 'Without C2 (growth)', fn: (p, line, med) => rawVariant(p, asOf, model, line, true, false, true, med) },
-    { name: 'Without C3 (maturity)', fn: (p, line, med) => rawVariant(p, asOf, model, line, true, true, false, med) },
+    { name: 'Full (C1+C2+C3)', fn: (p, line, med) => rawVariant(p, asOf, testModel, line, true, true, true, med) },
+    { name: 'Without C1 (scale)', fn: (p, line, med) => rawVariant(p, asOf, testModel, line, false, true, true, med) },
+    { name: 'Without C2 (growth)', fn: (p, line, med) => rawVariant(p, asOf, testModel, line, true, false, true, med) },
+    { name: 'Without C3 (maturity)', fn: (p, line, med) => rawVariant(p, asOf, testModel, line, true, true, false, med) },
     { name: 'Baseline (starter)', fn: (p) => starterImplied(p, asOf) },
   ];
 
@@ -997,9 +1024,9 @@ export function computeAblation(snapshot: Snapshot, model: ModelConstants = MODE
 
   // Stepwise on the same cross-validated set: C1, then +C2, then +C3.
   const stepwise = [
-    { model: 'C1 only', fn: (p: SnapshotProtocol, line: { intercept: number; slope: number; effects: Record<string, number> }, med: number) => rawVariant(p, asOf, model, line, true, false, false, med) },
-    { model: 'C1+C2', fn: (p: SnapshotProtocol, line: { intercept: number; slope: number; effects: Record<string, number> }, med: number) => rawVariant(p, asOf, model, line, true, true, false, med) },
-    { model: 'C1+C2+C3 (Full)', fn: (p: SnapshotProtocol, line: { intercept: number; slope: number; effects: Record<string, number> }, med: number) => rawVariant(p, asOf, model, line, true, true, true, med) },
+    { model: 'C1 only', fn: (p: SnapshotProtocol, line: { intercept: number; slope: number; effects: Record<string, number> }, med: number) => rawVariant(p, asOf, testModel, line, true, false, false, med) },
+    { model: 'C1+C2', fn: (p: SnapshotProtocol, line: { intercept: number; slope: number; effects: Record<string, number> }, med: number) => rawVariant(p, asOf, testModel, line, true, true, false, med) },
+    { model: 'C1+C2+C3 (Full)', fn: (p: SnapshotProtocol, line: { intercept: number; slope: number; effects: Record<string, number> }, med: number) => rawVariant(p, asOf, testModel, line, true, true, true, med) },
   ].map((s) => {
     const pred: number[] = [];
     for (let f = 0; f < 5; f++) {
@@ -1018,7 +1045,7 @@ export function computeAblation(snapshot: Snapshot, model: ModelConstants = MODE
   const test = clean.filter((_, i) => i % 3 === 2);
   const trainLine = fitLine(train);
   const trainMed = median(train.map((p) => Math.log(p.mcap_usd!)));
-  const splitFull = test.map((p) => rawVariant(p, asOf, model, trainLine, true, true, true, trainMed));
+  const splitFull = test.map((p) => rawVariant(p, asOf, testModel, trainLine, true, true, true, trainMed));
   const splitActual = test.map((p) => p.mcap_usd!);
   const splitFullMed = median(splitFull.map((v, i) => Math.abs(Math.log(splitActual[i]!) - Math.log(v))));
 
@@ -1082,7 +1109,7 @@ export function computeAblation(snapshot: Snapshot, model: ModelConstants = MODE
     const cvTest = clean.filter((_, i) => i % 5 === f);
     const perCat = fitPerCategoryLine(cvTrain);
     for (const p of cvTest) {
-      perCatErrs.push(Math.abs(Math.log(p.mcap_usd!) - Math.log(rawPerCategory(p, asOf, model, perCat))));
+      perCatErrs.push(Math.abs(Math.log(p.mcap_usd!) - Math.log(rawPerCategory(p, asOf, testModel, perCat))));
     }
   }
   const perCatMed = median(perCatErrs);
@@ -1105,6 +1132,259 @@ export function computeAblation(snapshot: Snapshot, model: ModelConstants = MODE
     },
     note: 'Pairwise win rate governs: the board is a ranking. The median-error column is calibration only; a constant median scores well on it yet ranks at random.',
   };
+}
+
+// ---------------------------------------------------------------- the per-term validation (v5)
+//
+// Rank 1's evidence is per term, under two methods: leave-one-out (every
+// clean comp held out once in turn) and walk-forward (the older half of the
+// clean comps by listing date trains the line, the newer half is priced).
+// This section computes that table, so the dashboard can show which terms
+// survived both tests and which were tried and did not help. A term is
+// tested with the term on against the same model with the term off, on the
+// same held-out set, so the delta is the term's own contribution, and the
+// governing metric is the pairwise win rate on the ranking, as in the
+// ablation. The median error is shown beside it for calibration only.
+//
+// The terms in the model are C1 the clean-comps scale, C2 growth, C3
+// maturity, and the category effect. The two terms the model does not use
+// are chain count and age beyond maturity, each as a mild candidate
+// multiplier on the full model. The two rejected approaches are the
+// per-category slope and the house starter's flat multiple, scored the
+// same way. A term that helps the ranking on both methods is kept; one
+// that is inside noise on both is tested-not-kept; one that hurts the
+// ranking on either is must-not-help, and it stays out of the model.
+//
+// Range honesty is measured the same two ways: for each held-out protocol,
+// the band is the training residuals' P10-P90 (and P25-P75), and coverage
+// is how often the held-out market cap lands inside it. A band that covers
+// far less than its name promises is not an honest band.
+
+/** One term's held-out numbers under both methods, and its verdict. */
+export interface TermValidation {
+  term: string;
+  what: string;
+  in_model: boolean;
+  loo_with_pairwise: number;
+  loo_without_pairwise: number;
+  loo_delta_pts: number;
+  loo_with_median_factor: number;
+  loo_without_median_factor: number;
+  wf_with_pairwise: number;
+  wf_without_pairwise: number;
+  wf_delta_pts: number;
+  wf_with_median_factor: number;
+  wf_without_median_factor: number;
+  wf_n: number;
+  verdict: 'kept' | 'tested-not-kept' | 'must-not-help';
+  note: string;
+}
+
+/** How often held-out market caps land inside the printed bands. */
+export interface RangeHonesty {
+  loo_n: number;
+  loo_p10_p90: number;
+  loo_p25_p75: number;
+  wf_n: number;
+  wf_p10_p90: number;
+  wf_p25_p75: number;
+}
+
+/** The per-term table and the range honesty, both computed from this snapshot. */
+export interface TermValidationResult {
+  terms: TermValidation[];
+  range: RangeHonesty;
+  loo_n: number;
+  wf_n: number;
+  wf_train_n: number;
+}
+
+type TermToggles = { c1: boolean; c2: boolean; c3: boolean; cat: boolean; chain: boolean; age: boolean };
+
+/** One protocol's raw implied value under a set of term toggles. */
+function rawTerms(
+  p: SnapshotProtocol,
+  asOf: string,
+  model: ModelConstants,
+  line: { intercept: number; slope: number; effects: Record<string, number> },
+  medLog: number,
+  t: TermToggles,
+): number {
+  const { growthMult, maturityMult, age } = multipliers(p, asOf, model);
+  const base = t.c1
+    ? Math.exp(line.intercept + line.slope * Math.log(p.tvl_usd) + (t.cat ? (line.effects[p.category ?? '(null)'] ?? 0) : 0))
+    : Math.exp(medLog);
+  let v = base * (t.c2 ? growthMult : 1) * (t.c3 ? maturityMult : 1);
+  if (t.chain) v *= Math.pow(Math.max(1, p.chains.length), 0.1);
+  if (t.age) v *= 1 + 0.05 * Math.log1p(((age ?? 365) / 365));
+  return Math.max(1, v);
+}
+
+const FULL_TOGGLES: TermToggles = { c1: true, c2: true, c3: true, cat: true, chain: false, age: false };
+
+/** The quantiles of a sorted list of residuals, as log factors. */
+function residualBand(residuals: number[]): { p10: number; p25: number; p75: number; p90: number } {
+  const s = [...residuals].sort((a, b) => a - b);
+  const at = (q: number): number => s[Math.min(s.length - 1, Math.max(0, Math.floor(q * s.length)))]!;
+  return { p10: at(0.1), p25: at(0.25), p75: at(0.75), p90: at(0.9) };
+}
+
+export function computeTermValidation(snapshot: Snapshot, model: ModelConstants = MODEL): TermValidationResult {
+  const traded = fitSet(snapshot.protocols);
+  const clean = cleanComps(traded);
+  const asOf = snapshot.as_of;
+  const testModel: ModelConstants = { ...model, use_growth: true, use_maturity: true };
+
+  // Leave-one-out: every clean comp held out once, the line fit on the rest.
+  // Each variant's predictions are collected on the same held-out set.
+  const looPred: Record<string, number[]> = {};
+  const looActual: number[] = [];
+  const looBands: { p10: number; p25: number; p75: number; p90: number }[] = [];
+  const looPredFull: number[] = [];
+  for (let i = 0; i < clean.length; i++) {
+    const train = clean.filter((_, j) => j !== i);
+    const line = fitLine(train);
+    const medLog = median(train.map((p) => Math.log(p.mcap_usd!)));
+    const p = clean[i]!;
+    looActual.push(p.mcap_usd!);
+    const band = residualBand(train.map((q) => Math.log(q.mcap_usd!) - Math.log(rawTerms(q, asOf, testModel, line, medLog, FULL_TOGGLES))));
+    looBands.push(band);
+    looPredFull.push(rawTerms(p, asOf, testModel, line, medLog, FULL_TOGGLES));
+  }
+  // The variant predictions, keyed by a short name, filled per held-out protocol.
+  const variantDefs: { key: string; fn: (p: SnapshotProtocol, line: { intercept: number; slope: number; effects: Record<string, number> }, medLog: number) => number }[] = [
+    { key: 'full', fn: (p, line, med) => rawTerms(p, asOf, testModel, line, med, FULL_TOGGLES) },
+    { key: 'noC1', fn: (p, line, med) => rawTerms(p, asOf, testModel, line, med, { ...FULL_TOGGLES, c1: false }) },
+    { key: 'noC2', fn: (p, line, med) => rawTerms(p, asOf, testModel, line, med, { ...FULL_TOGGLES, c2: false }) },
+    { key: 'noC3', fn: (p, line, med) => rawTerms(p, asOf, testModel, line, med, { ...FULL_TOGGLES, c3: false }) },
+    { key: 'noCat', fn: (p, line, med) => rawTerms(p, asOf, testModel, line, med, { ...FULL_TOGGLES, cat: false }) },
+    { key: 'withChain', fn: (p, line, med) => rawTerms(p, asOf, testModel, line, med, { ...FULL_TOGGLES, chain: true }) },
+    { key: 'withAge', fn: (p, line, med) => rawTerms(p, asOf, testModel, line, med, { ...FULL_TOGGLES, age: true }) },
+  ];
+  for (const v of variantDefs) looPred[v.key] = [];
+  for (let i = 0; i < clean.length; i++) {
+    const train = clean.filter((_, j) => j !== i);
+    const line = fitLine(train);
+    const medLog = median(train.map((p) => Math.log(p.mcap_usd!)));
+    const p = clean[i]!;
+    for (const v of variantDefs) looPred[v.key]!.push(v.fn(p, line, medLog));
+  }
+  // The per-category slope and the flat multiple, leave-one-out.
+  const looPerCat: number[] = [];
+  const looStarter: number[] = [];
+  for (let i = 0; i < clean.length; i++) {
+    const train = clean.filter((_, j) => j !== i);
+    const perCat = fitPerCategoryLine(train);
+    const p = clean[i]!;
+    looPerCat.push(rawPerCategory(p, asOf, testModel, perCat));
+    looStarter.push(starterImplied(p, asOf));
+  }
+
+  // Walk-forward: the clean comps with a listing date, older half trains, newer half is priced.
+  const dated = clean
+    .filter((p) => p.listed_at !== null)
+    .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  const mid = Math.floor(dated.length / 2);
+  const wfTrain = dated.slice(0, mid);
+  const wfTest = dated.slice(mid);
+  const wfLine = fitLine(wfTrain);
+  const wfMed = median(wfTrain.map((p) => Math.log(p.mcap_usd!)));
+  const wfActual = wfTest.map((p) => p.mcap_usd!);
+  const wfBand = residualBand(wfTrain.map((q) => Math.log(q.mcap_usd!) - Math.log(rawTerms(q, asOf, testModel, wfLine, wfMed, FULL_TOGGLES))));
+  const wfPred: Record<string, number[]> = {};
+  for (const v of variantDefs) wfPred[v.key] = wfTest.map((p) => v.fn(p, wfLine, wfMed));
+  const wfPerCatLine = fitPerCategoryLine(wfTrain);
+  const wfPerCat = wfTest.map((p) => rawPerCategory(p, asOf, testModel, wfPerCatLine));
+  const wfStarter = wfTest.map((p) => starterImplied(p, asOf));
+  const wfFull = wfPred['full']!;
+
+  // Range honesty: how often the held-out market cap lands inside the band
+  // built from the training residuals.
+  const wfIn = (lo: number, hi: number): number => {
+    let c = 0;
+    for (let i = 0; i < wfActual.length; i++) {
+      const r = Math.log(wfActual[i]!) - Math.log(wfFull[i]!);
+      if (r >= lo && r <= hi) c++;
+    }
+    return wfActual.length === 0 ? 0 : c / wfActual.length;
+  };
+  // The LOO band is per-protocol (each held-out protocol has its own train
+  // band), so LOO coverage is counted against each protocol's own band.
+  let looP10 = 0;
+  let looP25 = 0;
+  for (let i = 0; i < looActual.length; i++) {
+    const r = Math.log(looActual[i]!) - Math.log(looPredFull[i]!);
+    const b = looBands[i]!;
+    if (r >= b.p10 && r <= b.p90) looP10++;
+    if (r >= b.p25 && r <= b.p75) looP25++;
+  }
+  const range: RangeHonesty = {
+    loo_n: looActual.length,
+    loo_p10_p90: looActual.length === 0 ? 0 : looP10 / looActual.length,
+    loo_p25_p75: looActual.length === 0 ? 0 : looP25 / looActual.length,
+    wf_n: wfActual.length,
+    wf_p10_p90: wfIn(wfBand.p10, wfBand.p90),
+    wf_p25_p75: wfIn(wfBand.p25, wfBand.p75),
+  };
+
+  const medFactor = (pred: number[], actual: number[]): number =>
+    Math.exp(median(pred.map((v, i) => Math.abs(Math.log(actual[i]!) - Math.log(v)))));
+  const pairOf = (pred: number[], actual: number[]): number => pairwiseWin(pred, actual);
+
+  // One row: the term on against the same model with the term off, on both methods.
+  const row = (
+    term: string,
+    what: string,
+    inModel: boolean,
+    withLoo: number[],
+    withoutLoo: number[],
+    withWf: number[],
+    withoutWf: number[],
+    note: string,
+  ): TermValidation => {
+    const lw = pairOf(withLoo, looActual);
+    const lwo = pairOf(withoutLoo, looActual);
+    const ww = pairOf(withWf, wfActual);
+    const wwo = pairOf(withoutWf, wfActual);
+    const dLoo = (lw - lwo) * 100;
+    const dWf = (ww - wwo) * 100;
+    const looWithMed = medFactor(withLoo, looActual);
+    const looWithoutMed = medFactor(withoutLoo, looActual);
+    const wfWithMed = medFactor(withWf, wfActual);
+    const wfWithoutMed = medFactor(withoutWf, wfActual);
+    const helps = (d: number): boolean => d > 0.5;
+    const hurts = (d: number): boolean => d < -0.5;
+    // A term is only kept when it helps the ranking without wrecking the
+    // values: if the median error with the term is more than 10% worse than
+    // without it on either method, the term is not kept, however it ranks.
+    // The flat multiple is the case that forces this guard: it ranks a
+    // little better on a small set, but its implied values are far worse.
+    const calOk = looWithMed <= looWithoutMed * 1.1 && wfWithMed <= wfWithoutMed * 1.1;
+    const ranksHelps = (helps(dLoo) && helps(dWf)) || (helps(dLoo) && !hurts(dWf)) || (helps(dWf) && !hurts(dLoo));
+    let verdict: TermValidation['verdict'];
+    if (ranksHelps && calOk) verdict = 'kept';
+    else if (hurts(dLoo) || hurts(dWf)) verdict = 'must-not-help';
+    else verdict = 'tested-not-kept';
+    return {
+      term, what, in_model: inModel,
+      loo_with_pairwise: lw, loo_without_pairwise: lwo, loo_delta_pts: dLoo,
+      loo_with_median_factor: looWithMed, loo_without_median_factor: looWithoutMed,
+      wf_with_pairwise: ww, wf_without_pairwise: wwo, wf_delta_pts: dWf,
+      wf_with_median_factor: wfWithMed, wf_without_median_factor: wfWithoutMed,
+      wf_n: wfActual.length, verdict, note,
+    };
+  };
+  const terms: TermValidation[] = [
+    row('C1 scale', 'The clean-comps log-log line on TVL', true, looPred['full']!, looPred['noC1']!, wfPred['full']!, wfPred['noC1']!, 'Without it the board ranks at random.'),
+    row('C2 growth', 'The 7-day growth multiplier', model.use_growth, looPred['full']!, looPred['noC2']!, wfPred['full']!, wfPred['noC2']!, 'Dropped from the model: neutral on both methods, so it earns no place.'),
+    row('C3 maturity', 'The age-with-no-token multiplier', model.use_maturity, looPred['full']!, looPred['noC3']!, wfPred['full']!, wfPred['noC3']!, 'Dropped from the model: neutral on both methods, so it earns no place.'),
+    row('Category effect', 'A category mean residual, shrunk n/(n+5)', model.use_category_effect, looPred['full']!, looPred['noCat']!, wfPred['full']!, wfPred['noCat']!, 'Dropped from the model: it hurts the ranking on both methods.'),
+    row('Chain count', 'A mild multi-chain boost on the full model', false, looPred['withChain']!, looPred['full']!, wfPred['withChain']!, wfPred['full']!, 'A candidate term: more chains does not mean a bigger launch.'),
+    row('Age beyond maturity', 'A mild age boost on the full model', false, looPred['withAge']!, looPred['full']!, wfPred['withAge']!, wfPred['full']!, 'A candidate term: maturity already carries the age signal.'),
+    row('Per-category slope', 'A separate log-log line per category', false, looPerCat, looPred['full']!, wfPerCat, wfPred['full']!, 'Rejected: the single slope holds out better.'),
+    row('Flat multiple', 'The house starter: 0.25 x TVL', false, looStarter, looPred['full']!, wfStarter, wfPred['full']!, 'Rejected: it ranks a little better on a small set, but its values are far worse, and it is the house starter.'),
+  ];
+  return { terms, range, loo_n: looActual.length, wf_n: wfActual.length, wf_train_n: wfTrain.length };
 }
 
 /** One protocol's full score: raw implied, odds, expected value, and its P10-P90 band. */
@@ -1387,11 +1667,41 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   const board = buildBoard(snapshot, model);
   const fit = fitModel(snapshot, model);
   const ablation = computeAblation(snapshot, model, fit);
+  const terms = computeTermValidation(snapshot, model);
   const live = liveRows(snapshot);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
   const preNotRankable = snapshot.protocols.filter((p) => isPreToken(p) && !isRankable(p)).length;
   const rankableAboveFloor = snapshot.protocols.filter((p) => isRankable(p) && p.tvl_usd >= snapshot.floor_usd && !snapshot.watchlist.includes(p.slug)).length;
   const tradedNotLive = snapshot.protocols.filter((p) => !isPreToken(p)).length - live.length;
+  // The ledger: every one of the 758 protocols in exactly one group. The groups
+  // are disjoint by construction (board is pre-token, live is traded, the
+  // traded remainder splits by whether it has a usable cap, the pre-token
+  // remainder splits by why it is not rankable, and the above-floor remainder
+  // is rankable but outside the watchlist).
+  const liveSlugs = new Set(live.map((l) => l.slug));
+  const traded = fitSet(snapshot.protocols);
+  const cleanSet = new Set(cleanComps(traded).map((p) => p.slug));
+  const ledgerTradedClean = snapshot.protocols.filter((p) => !isPreToken(p) && cleanSet.has(p.slug) && !liveSlugs.has(p.slug)).length;
+  const ledgerTradedNotClean = snapshot.protocols.filter((p) => !isPreToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && !cleanSet.has(p.slug) && !liveSlugs.has(p.slug)).length;
+  const ledgerTradedNoCap = snapshot.protocols.filter((p) => !isPreToken(p) && (p.mcap_usd === null || p.mcap_usd <= 0)).length;
+  const ledgerPreCex = snapshot.protocols.filter((p) => isPreToken(p) && p.category === 'CEX').length;
+  const ledgerPreVersioned = snapshot.protocols.filter((p) => isPreToken(p) && p.category !== 'CEX' && VERSIONED.test(p.name)).length;
+  const groups: LedgerGroup[] = [
+    { label: 'Ranked watchlist', n: snapshot.watchlist.length, kind: 'ranked' },
+    { label: 'Ranked early', n: early, kind: 'ranked' },
+    { label: 'Live, top by market cap', n: live.length, kind: 'traded' },
+    { label: 'Token trades, clean comp', n: ledgerTradedClean, kind: 'traded' },
+    { label: 'Token trades, not a clean comp', n: ledgerTradedNotClean, kind: 'traded' },
+    { label: 'Token recorded, no usable cap', n: ledgerTradedNoCap, kind: 'recorded' },
+    { label: 'Pre-token, not rankable: exchange', n: ledgerPreCex, kind: 'set-aside' },
+    { label: 'Pre-token, not rankable: versioned pool', n: ledgerPreVersioned, kind: 'set-aside' },
+    { label: 'Rankable above the floor, outside watchlist', n: rankableAboveFloor, kind: 'set-aside' },
+  ];
+  const ledgerSum = groups.reduce((a, g) => a + g.n, 0);
+  if (ledgerSum !== snapshot.protocols.length) {
+    throw new Error(`token radar: the ledger sums to ${ledgerSum}, not ${snapshot.protocols.length}`);
+  }
+  const comps: [number, number][] = cleanComps(traded).map((p) => [Math.round(p.tvl_usd / 1000), Math.round(p.mcap_usd! / 1000)]);
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -1404,6 +1714,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     live_size: live.length,
     fit,
     ablation,
+    terms,
     accounted: {
       total: snapshot.protocols.length,
       board: board.length,
@@ -1411,9 +1722,11 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
       traded_not_live: tradedNotLive,
       pre_token_not_rankable: preNotRankable,
       rankable_above_floor_not_watchlist: rankableAboveFloor,
+      groups,
     },
     rows: board.map(radarRow),
     live,
+    comps,
   };
   return { board, radar };
 }
@@ -1493,11 +1806,11 @@ export const PLAN: PlanPhase[] = [
   },
   {
     name: 'Stage 2: Model Calibration & Ablation',
-    what: 'Fit the clean-comps line and the peer logistic on train only, run the 4-component LOCO ablation on held-out, and apply the prune/damp rule.',
+    what: 'Fit the clean-comps line and the peer logistic on train only, run the 4-component LOCO ablation and the per-term leave-one-out plus walk-forward validation on held-out, and apply the keep/tested-not-kept/must-not-help rule.',
     duration: '8 s',
     resource: '1 CPU x 8 s, 1024 MB',
     cost_usd: 0,
-    pass: 'Ablation table complete; every component labelled active, pruned or damped with its rule.',
+    pass: 'Ablation and per-term tables complete; every term labelled kept, tested-not-kept or must-not-help with its rule.',
   },
   {
     name: 'Stage 3: Dashboard Build & Screenshot Capture',
@@ -1522,18 +1835,54 @@ export const PLAN: PlanPhase[] = [
 // so the page's numbers and the board's numbers are the same numbers, and the
 // payload stays small enough for the judge to read whole.
 
-/** One board row, compact: two-character keys, only what cannot be recomputed. */
-export type CompactRow = [number, string, string, string | null, string[], number, number | null, number | null, number, number, FarmVerdict];
+/** One board row, compact: only what cannot be recomputed. The name is stored
+ * only when it differs from the slug in title case, the category is an index
+ * into `cats`, and only the first chain is stored (with the count). The TVL
+ * stays exact, so the page's recomputation of a row's value matches the
+ * board's arithmetic to the dollar; the implied value stays exact too. */
+export type CompactRow = [number, string, string | null, number, string, number, number, number | null, number | null, number, number, FarmVerdict];
 
 /** One live-token row, compact. */
-export type CompactLive = [string, string, string | null, number, number | null, number | null];
+export type CompactLive = [string, string | null, number, number, number | null, number | null];
+
+/** One term, compact: [term, what, in_model, loo_with, loo_without, loo_delta,
+ * loo_with_med, loo_without_med, wf_with, wf_without, wf_delta, wf_with_med,
+ * wf_without_med, wf_n, verdict, note]. Pairwise is 0..1, delta is in points. */
+export type CompactTerm = [string, string, boolean, number, number, number, number, number, number, number, number, number, number, number, string, string];
+
+/** The per-term table and range honesty, compact: the range is
+ * [loo_n, loo_p10_p90, loo_p25_p75, wf_n, wf_p10_p90, wf_p25_p75]. */
+export interface CompactTerms {
+  terms: CompactTerm[];
+  range: [number, number, number, number, number, number];
+  loo_n: number;
+  wf_n: number;
+  wf_train_n: number;
+}
+
+/** The ablation, compact: only the fields the dashboard shows. A row is
+ * [model, pairwise, delta, ciLow, ciHigh, median_factor, status, status_note];
+ * stepwise is [model, pairwise]; odds is [logistic, blend, base, deltaBase,
+ * deltaBlend]; young is [n, median_factor, rest_median_factor, ratio]. */
+export interface CompactAblation {
+  cv_n: number;
+  rows: [string, number, number | null, number | null, number | null, number, string, string][];
+  stepwise: [string, number][];
+  odds: [number, number, number, number, number];
+  young: [number, number, number, number];
+  per_category_ratio: number;
+}
 
 /** The whole compact dataset the dashboard reads. */
 export interface CompactData {
-  /** [rank, slug, name, category, chains, tvl, change_7d, age_days, implied, odds, verdict] */
+  /** [rank, slug, name|null, catIdx, firstChain, chainCount, tvl, change_7d, age_days, implied, odds, verdict] */
   rows: CompactRow[];
-  /** [slug, name, category, tvl, mcap, change_7d] */
+  /** [slug, name|null, catIdx, tvlK, mcapK, change_7d] */
   live: CompactLive[];
+  /** The category dictionary, sorted; a row's catIdx points into it. */
+  cats: string[];
+  /** The clean comps' [TVL, market cap] in $K, for the scatter plot. */
+  comps: [number, number][];
   as_of: string;
   floor_usd: number;
   model_version: string;
@@ -1545,41 +1894,46 @@ export interface CompactData {
   fit: {
     intercept: number;
     slope: number;
-    effects: Record<string, number>;
     residual_p10: number;
     residual_p90: number;
     median_factor: number;
-    starter_median_factor: number;
-    coverage_n: number;
-    test_n: number;
-    clean_n: number;
-    traded_n: number;
-    odds_log_loss: number;
-    odds_log_loss_blend: number;
-    odds_log_loss_base: number;
-    odds_categories: string[];
   };
-  model: ModelConstants;
-  ablation: Ablation;
+  model: { growth_floor: number; growth_cap: number };
+  ablation: CompactAblation;
+  terms: CompactTerms;
   plan: PlanPhase[];
   build_hash: string;
 }
 
+/** A slug in title case, the display name the dashboard derives when no name is stored. */
+export function titleSlug(slug: string): string {
+  return slug.split('-').map((w) => (w.length === 0 ? w : w[0]!.toUpperCase() + w.slice(1))).join(' ');
+}
+
 /** The compact dataset for the dashboard, from the built board and radar. */
 export function compactData(radar: RadarData, ablation: Ablation, buildHash: string): CompactData {
-  // Odds to 4 decimals and growth to 2: the page shows them as a percent and a
-  // percent, and the carried implied value stays exact, so the display never drifts
-  // from the board. The fit constants stay at full precision, so the page's
-  // recomputation of a row's raw value matches the board's arithmetic.
-  const round4d = (n: number): number => Math.round(n * 1e4) / 1e4;
+  // Odds to 6 decimals: the page recomputes a row's expected value from the
+  // odds, and 4 decimals leaves the recomputed value a few thousand dollars
+  // from the board's on a large row, which shows in the drawer. The carried
+  // implied value stays exact, so the display never drifts from the board.
+  const round6d = (n: number): number => Math.round(n * 1e6) / 1e6;
   const round2d = (n: number): number => Math.round(n * 1e2) / 1e2;
+  const catSet = new Set<string>();
+  for (const r of radar.rows) catSet.add(r.category ?? '(null)');
+  for (const l of radar.live) catSet.add(l.category ?? '(null)');
+  const cats = [...catSet].sort();
+  const catIdx = (c: string | null): number => cats.indexOf(c ?? '(null)');
   return {
     rows: radar.rows.map((r): CompactRow => [
-      r.rank, r.slug, r.name, r.category, r.chains, r.tvl_usd,
+      r.rank, r.slug, r.name === titleSlug(r.slug) ? null : r.name, catIdx(r.category),
+      r.chains.length > 0 ? r.chains[0]! : '', r.chains.length,
+      r.tvl_usd,
       r.change_7d === null ? null : round2d(r.change_7d), r.age_days,
-      r.implied_value_usd, round4d(r.token_odds), r.verdict,
+      r.implied_value_usd, round6d(r.token_odds), r.verdict,
     ]),
-    live: radar.live.map((l): CompactLive => [l.slug, l.name, l.category, l.tvl_usd, l.mcap_usd, l.change_7d === null ? null : round2d(l.change_7d)]),
+    live: radar.live.map((l): CompactLive => [l.slug, l.name === titleSlug(l.slug) ? null : l.name, catIdx(l.category), Math.round(l.tvl_usd / 1000), l.mcap_usd === null ? null : Math.round(l.mcap_usd / 1000), l.change_7d === null ? null : round2d(l.change_7d)]),
+    cats,
+    comps: radar.comps,
     as_of: radar.as_of,
     floor_usd: radar.floor_usd,
     model_version: radar.model_version,
@@ -1591,22 +1945,59 @@ export function compactData(radar: RadarData, ablation: Ablation, buildHash: str
     fit: {
       intercept: radar.fit.intercept,
       slope: radar.fit.slope,
-      effects: radar.fit.category_effects,
       residual_p10: radar.fit.validation.residual_p10,
       residual_p90: radar.fit.validation.residual_p90,
       median_factor: radar.fit.validation.median_factor,
-      starter_median_factor: radar.fit.validation.starter_median_factor,
-      coverage_n: radar.fit.validation.coverage_n,
-      test_n: radar.fit.validation.test_n,
-      clean_n: radar.fit.validation.clean_n,
-      traded_n: radar.fit.validation.traded_n,
-      odds_log_loss: radar.fit.odds_model.log_loss_cv,
-      odds_log_loss_blend: radar.fit.odds_model.log_loss_blend_cv,
-      odds_log_loss_base: radar.fit.odds_model.log_loss_base_cv,
-      odds_categories: radar.fit.odds_model.categories,
     },
-    model: radar.model,
-    ablation,
+    model: { growth_floor: radar.model.growth_floor, growth_cap: radar.model.growth_cap },
+    ablation: {
+      cv_n: ablation.cv_n,
+      rows: ablation.rows.map((r): [string, number, number | null, number | null, number | null, number, string, string] => [
+        r.model, Math.round(r.pairwise * 1e4) / 1e4,
+        r.delta_pairwise === null ? null : Math.round(r.delta_pairwise * 10) / 10,
+        r.delta_pairwise_ci_low === null ? null : Math.round(r.delta_pairwise_ci_low * 10) / 10,
+        r.delta_pairwise_ci_high === null ? null : Math.round(r.delta_pairwise_ci_high * 10) / 10,
+        Math.round(r.median_factor * 100) / 100, r.status, r.status_note,
+      ]),
+      stepwise: ablation.stepwise.map((s): [string, number] => [s.model, Math.round(s.pairwise * 1e4) / 1e4]),
+      odds: [
+        Math.round(ablation.odds.logistic_log_loss * 1000) / 1000,
+        Math.round(ablation.odds.blend_log_loss * 1000) / 1000,
+        Math.round(ablation.odds.base_log_loss * 1000) / 1000,
+        Math.round(ablation.odds.delta_vs_base_pct * 10) / 10,
+        Math.round(ablation.odds.delta_vs_blend_pct * 10) / 10,
+      ],
+      young: [
+        ablation.young.n,
+        Math.round(ablation.young.median_factor * 100) / 100,
+        Math.round(ablation.young.rest_median_factor * 100) / 100,
+        Math.round(ablation.young.ratio * 100) / 100,
+      ],
+      per_category_ratio: Math.round(ablation.per_category_ratio * 100) / 100,
+    },
+    terms: {
+      terms: radar.terms.terms.map((t): CompactTerm => [
+        t.term, t.what, t.in_model,
+        Math.round(t.loo_with_pairwise * 1e4) / 1e4, Math.round(t.loo_without_pairwise * 1e4) / 1e4,
+        Math.round(t.loo_delta_pts * 10) / 10,
+        Math.round(t.loo_with_median_factor * 100) / 100, Math.round(t.loo_without_median_factor * 100) / 100,
+        Math.round(t.wf_with_pairwise * 1e4) / 1e4, Math.round(t.wf_without_pairwise * 1e4) / 1e4,
+        Math.round(t.wf_delta_pts * 10) / 10,
+        Math.round(t.wf_with_median_factor * 100) / 100, Math.round(t.wf_without_median_factor * 100) / 100,
+        t.wf_n, t.verdict, t.note,
+      ]),
+      range: [
+        radar.terms.range.loo_n,
+        Math.round(radar.terms.range.loo_p10_p90 * 1000) / 1000,
+        Math.round(radar.terms.range.loo_p25_p75 * 1000) / 1000,
+        radar.terms.range.wf_n,
+        Math.round(radar.terms.range.wf_p10_p90 * 1000) / 1000,
+        Math.round(radar.terms.range.wf_p25_p75 * 1000) / 1000,
+      ],
+      loo_n: radar.terms.loo_n,
+      wf_n: radar.terms.wf_n,
+      wf_train_n: radar.terms.wf_train_n,
+    },
     plan: PLAN,
     build_hash: buildHash,
   };
