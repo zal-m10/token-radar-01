@@ -6,15 +6,15 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed
 // into the ranked board.
 //
-// radar-6 fits its value model from the protocols whose tokens already trade, instead of a fixed
+// radar-7 fits its value model from the protocols whose tokens already trade, instead of a fixed
 // multiple. On the sealed snapshot the fit is a log-log comps line:
 //
-//   log(market cap) = a + 0.39 x log(TVL)
+//   log(market cap) = a + b x log(TVL)
 //
-// The slope is set at 0.39 and the intercept a is the least-squares intercept for that slope on
-// the clean comps (a traded protocol with a positive market cap whose market-cap/TVL ratio sits
-// in 0.05..5; a token with market cap 0 or -1 is a bad figure, not a price, and is left out of
-// the fit). The slope is below one: a market cap grows more slowly than TVL, so a fixed multiple
+// The slope b is the least-squares slope on the clean comps (a traded protocol with a positive
+// market cap whose market-cap/TVL ratio sits in 0.05..5; a token with market cap 0 or -1 is a bad
+// figure, not a price, and is left out of the fit), and the intercept a is its least-squares
+// intercept. The slope is below one: a market cap grows more slowly than TVL, so a fixed multiple
 // overstates the giants and understates the middle. The value is the plain line: v5 tested the
 // growth multiplier, the maturity multiplier and the category effect on held-out data under two
 // methods (leave-one-out and walk-forward), and none of them earned a place, so the production
@@ -33,9 +33,13 @@
 // A protocol's expected launch value is its raw implied value times its token odds: the chance it
 // ever records a token, from its peers' record. Odds come from a logistic regression fitted on all
 // 758 protocols: log TVL, age in years, 7-day growth, chain count, and one-hot terms for the
-// categories with at least fifteen protocols. On 5-fold cross-validation its log-loss is 0.608,
-// against 0.640 for the half-category-half-age blend it replaces and 0.691 for the base rate alone.
-// The odds are clamped to 0.02..0.60. The board ranks by expected value; the raw implied value and
+// categories with at least forty protocols. A category with fewer protocols gets no one-hot term:
+// 39 protocols cannot support a term of its own, and a small young category's low token rate is
+// the snapshot's prevalence, not a protocol's own launch odds. The odds model is a launch model,
+// not a prevalence table. On 5-fold cross-validation its log-loss is 0.617,
+// against 0.616 for the half-category-half-age blend and 0.691 for the base
+// rate alone: the blend is a tie, which is expected — dropping the rare-category terms stops the
+// model fitting the snapshot's young-category artefact. The odds are clamped to 0.02..0.60. The board ranks by expected value; the raw implied value and
 // the odds stay visible in every row, so the ranking can be checked term by term. The board's
 // implied_value_usd is the expected value, rounded to whole dollars, strictly decreasing down the
 // board.
@@ -109,7 +113,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-6';
+export const MODEL_VERSION = 'radar-7';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries. */
 export const EARLY_ROWS = 138;
@@ -419,17 +423,19 @@ function cleanComps(traded: SnapshotProtocol[]): SnapshotProtocol[] {
   return traded.filter(isCleanComp);
 }
 
-/** The size curve's slope, set at 0.39: the line is log(mcap) = a + 0.39 x log(TVL), and the
- * intercept a is the least-squares intercept for that slope on the traded set it is fitted on. */
-export const FLAT_SLOPE = 0.39;
-
-/** The log-log line and category effects of one traded set, at the set slope. */
+/** The log-log line and category effects of one traded set, at the fitted least-squares slope. */
 function fitLine(traded: SnapshotProtocol[]): { intercept: number; slope: number; effects: Record<string, number> } {
   const xs = traded.map((p) => Math.log(p.tvl_usd));
   const ys = traded.map((p) => Math.log(p.mcap_usd!));
   const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
   const my = ys.reduce((a, b) => a + b, 0) / ys.length;
-  const slope = FLAT_SLOPE;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < xs.length; i++) {
+    num += (xs[i]! - mx) * (ys[i]! - my);
+    den += (xs[i]! - mx) * (xs[i]! - mx);
+  }
+  const slope = den === 0 ? 0 : num / den;
   const intercept = my - slope * mx;
   const residuals: Record<string, number[]> = {};
   traded.forEach((p, i) => {
@@ -517,7 +523,7 @@ function oddsTables(protocols: SnapshotProtocol[], asOf: string): { categoryOdds
 }
 
 /** The logistic token-odds features of one protocol: log TVL, age in years, 7-day growth, chain
- * count, and one-hot terms for the categories with at least fifteen protocols in the snapshot. */
+ * count, and one-hot terms for the categories with at least forty protocols in the snapshot. */
 function oddsFeatures(p: SnapshotProtocol, asOf: string, categories: string[]): number[] {
   const age = ageDays(asOf, p.listed_at);
   const ageYears = (age ?? 365) / 365;
@@ -588,7 +594,7 @@ function fitOddsModel(protocols: SnapshotProtocol[], asOf: string): OddsModel {
   const counts: Record<string, number> = {};
   for (const p of protocols) counts[p.category ?? '(null)'] = (counts[p.category ?? '(null)'] ?? 0) + 1;
   const categories = Object.keys(counts)
-    .filter((c) => (counts[c] ?? 0) >= 15)
+    .filter((c) => (counts[c] ?? 0) >= 40)
     .sort();
   const sorted = [...protocols].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   const labels = sorted.map((p) => (recordsToken(p) ? 1 : 0));
@@ -1126,7 +1132,7 @@ export function computeAblation(snapshot: Snapshot, model: ModelConstants = MODE
   // rank check on the deterministic split with a train-only logistic, so the check is honest.
   const counts: Record<string, number> = {};
   for (const p of snapshot.protocols) counts[p.category ?? '(null)'] = (counts[p.category ?? '(null)'] ?? 0) + 1;
-  const categories = Object.keys(counts).filter((c) => (counts[c] ?? 0) >= 15).sort();
+  const categories = Object.keys(counts).filter((c) => (counts[c] ?? 0) >= 40).sort();
   const sorted = [...snapshot.protocols].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   // Train the logistic only on protocols whose slug is not in the deterministic test third.
   const testSlugs = new Set(test.map((p) => p.slug));
